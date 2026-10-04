@@ -1,10 +1,12 @@
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
 // click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 
-
 // Github: https://github.com/ImAtomiskk
 import java.util.*;
 import java.io.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 void main(String[] args) {
     parseARG(args);
@@ -151,6 +153,10 @@ public static void parseARG(String[] args) {
                     System.out.println("--size needs a number");
                 }
             }
+            case "--help" -> {
+                Help();
+                System.exit(0);
+            }
             default -> System.out.println("Unknown argument: " + args[i]);
         }
     }
@@ -232,6 +238,29 @@ int minimax(String[][] board, boolean botTurn, String bot, String human) {
     }
     return best;
 }
+
+static void Help() {
+    try {
+        String content = Files.readString(Paths.get("README.md"));
+        String[] lines = content.split("\n");
+
+        for (String line : lines) {
+            if (line.startsWith("#")) {
+                System.out.println(CYAN + BOLD + line + RESET);
+            }
+            else if (line.contains("**")) {
+                System.out.println(line.replaceAll("\\*\\*(.*?)\\*\\*", BOLD + GREEN + "$1" + RESET));
+            }
+            else {
+                System.out.println(line);
+            }
+        }
+    } catch (IOException e) {
+        System.err.println("Could not read file: " + e.getMessage());
+    }
+
+}
+
 static int size = 3;
 static boolean botplay = false;
 static String difficulty = "normal";
@@ -242,3 +271,5 @@ public static final String YELLOW = "\u001B[33m";
 public static final String BLUE = "\u001B[34m";
 public static final String PURPLE = "\u001B[35m";
 public static final String CYAN = "\u001B[36m";
+public static final String BOLD = "\u001B[1m";
+
