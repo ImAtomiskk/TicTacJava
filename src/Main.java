@@ -12,7 +12,7 @@ static String difficulty = "normal";
 static String startPlayer = "X";
 static int turnTimerSeconds = 0;
 static String username = "Player";
-static final String BUILD_VERSION = "1.1-beta.2";
+static final String BUILD_VERSION = "1.1-beta.3";
 static String COLOR_X = "\u001B[31m";
 static String COLOR_O = "\u001B[34m";
 static String COLOR_GRID = "\u001B[37m";
@@ -520,7 +520,7 @@ void networkMenu(Scanner scanner) throws Exception {
             saveScores();
             IO.println(GREEN + "Server started. Joining room " + requestedRoom + " as a player..." + RESET);
             Thread.sleep(150);
-            runNetworkGame();
+            runNetworkGame(scanner);
             return;
         }
 
@@ -611,7 +611,7 @@ void chooseRoomAndConnect(Scanner scanner) throws Exception {
     requestedRoom = r.isEmpty() ? "1" : r;
     isServer = false;
     networkMode = true;
-    runNetworkGame();
+    runNetworkGame(scanner);
 }
 
 List<ServerEntry> buildJoinServerList() {
@@ -867,14 +867,19 @@ boolean resumeGame(Scanner scanner) throws Exception {
 }
 
 void runNetworkGame() throws Exception {
+    try (Scanner scanner = new Scanner(System.in)) {
+        runNetworkGame(scanner);
+    }
+}
+
+void runNetworkGame(Scanner scanner) throws Exception {
     if (isServer) {
         runServer();
         return;
     }
     try (Socket socket = new Socket(serverAddress, networkPort);
          PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-         BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-         Scanner scanner = new Scanner(System.in)) {
+         BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
         out.println("VERSION=" + BUILD_VERSION);
         out.println("HELLO=" + username);
         out.println("ROOM=" + requestedRoom);
@@ -902,10 +907,13 @@ void runNetworkGame() throws Exception {
 
 static class Room {
     final Socket socket;
+    final BufferedReader in;
     final PrintWriter out;
     final String name;
     final CountDownLatch paired = new CountDownLatch(1);
-    Room(Socket socket, PrintWriter out, String name) { this.socket = socket; this.out = out; this.name = name; }
+    Room(Socket socket, BufferedReader in, PrintWriter out, String name) {
+        this.socket = socket; this.in = in; this.out = out; this.name = name;
+    }
 }
 
 static final Map<String, Room> ROOMS = new HashMap<>();
@@ -1075,7 +1083,7 @@ void handleRoomConnection(Socket socket) throws Exception {
     synchronized (ROOMS) {
         first = ROOMS.remove(roomId);
         if (first == null) {
-            waiting = new Room(socket, out, name);
+            waiting = new Room(socket, in, out, name);
             ROOMS.put(roomId, waiting);
         }
     }
@@ -1103,14 +1111,16 @@ void handleRoomConnection(Socket socket) throws Exception {
 
     // Relay commands between the two clients. The clients own game state and UI.
     ExecutorService relay = Executors.newFixedThreadPool(2);
-    relay.submit(() -> relayPlayer(first.socket, out, socket));
-    relay.submit(() -> relayPlayer(socket, first.out, first.socket));
+    // Reuse the BufferedReader created during the handshake. Creating a second
+    // BufferedReader on the same socket can buffer bytes independently and lose
+    // or delay gameplay messages, especially across different JVM/platforms.
+    relay.submit(() -> relayPlayer(first.socket, first.in, out, socket));
+    relay.submit(() -> relayPlayer(socket, in, first.out, first.socket));
     relay.shutdown();
 }
 
-void relayPlayer(Socket from, PrintWriter to, Socket other) {
+void relayPlayer(Socket from, BufferedReader in, PrintWriter to, Socket other) {
     try {
-        BufferedReader in = new BufferedReader(new InputStreamReader(from.getInputStream()));
         String line;
         while ((line = in.readLine()) != null) {
             to.println(line);
