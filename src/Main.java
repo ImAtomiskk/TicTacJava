@@ -3,664 +3,1490 @@ import java.util.*;
 import java.io.*;
 import java.net.*;
 import java.nio.file.*;
-import java.util.Properties;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
-static int     size        = 3;
-        static boolean botplay     = false;
-        static String  difficulty  = "normal";
-        static String  startPlayer = "X";
-        static int turnTimerSeconds = 0;
-        static String username = "Player";
-        static String COLOR_X    = "\u001B[31m";
-        static String COLOR_O    = "\u001B[34m";
-        static String COLOR_GRID = "\u001B[37m";
-        static final String RESET  = "\u001B[0m";
-        static final String GREEN  = "\u001B[32m";
-        static final String YELLOW = "\u001B[33m";
-        static final String PURPLE = "\u001B[35m";
-        static final String CYAN   = "\u001B[36m";
-        static final String BOLD   = "\u001B[1m";
-        static final String RED    = "\u001B[31m";
+static int size = 3;
+static boolean botplay = false;
+static String difficulty = "normal";
+static String startPlayer = "X";
+static int turnTimerSeconds = 0;
+static String username = "Player";
+static String COLOR_X = "\u001B[31m";
+static String COLOR_O = "\u001B[34m";
+static String COLOR_GRID = "\u001B[37m";
+static final String RESET = "\u001B[0m";
+static final String GREEN = "\u001B[32m";
+static final String YELLOW = "\u001B[33m";
+static final String PURPLE = "\u001B[35m";
+static final String CYAN = "\u001B[36m";
+static final String BOLD = "\u001B[1m";
+static final String RED = "\u001B[31m";
 
-        static final Map<String, String> COLOR_MAP = Map.ofEntries(
-                Map.entry("RED",          "\u001B[31m"),
-                Map.entry("GREEN",        "\u001B[32m"),
-                Map.entry("YELLOW",       "\u001B[33m"),
-                Map.entry("BLUE",         "\u001B[34m"),
-                Map.entry("PURPLE",       "\u001B[35m"),
-                Map.entry("CYAN",         "\u001B[36m"),
-                Map.entry("WHITE",        "\u001B[37m"),
-                Map.entry("BOLD_RED",     "\u001B[1;31m"),
-                Map.entry("BOLD_GREEN",   "\u001B[1;32m"),
-                Map.entry("BOLD_YELLOW",  "\u001B[1;33m"),
-                Map.entry("BOLD_BLUE",    "\u001B[1;34m"),
-                Map.entry("BOLD_CYAN",    "\u001B[1;36m")
-        );
+static final Map<String, String> COLOR_MAP = Map.ofEntries(
+        Map.entry("RED", "\u001B[31m"), Map.entry("GREEN", "\u001B[32m"),
+        Map.entry("YELLOW", "\u001B[33m"), Map.entry("BLUE", "\u001B[34m"),
+        Map.entry("PURPLE", "\u001B[35m"), Map.entry("CYAN", "\u001B[36m"),
+        Map.entry("WHITE", "\u001B[37m"), Map.entry("BOLD_RED", "\u001B[1;31m"),
+        Map.entry("BOLD_GREEN", "\u001B[1;32m"), Map.entry("BOLD_YELLOW", "\u001B[1;33m"),
+        Map.entry("BOLD_BLUE", "\u001B[1;34m"), Map.entry("BOLD_CYAN", "\u001B[1;36m")
+);
 
-        static final String SCORES_FILE = "scores.ini";
-
-        static boolean networkMode   = false;
-        static boolean isServer      = false;
-        static String  serverAddress = "localhost";
-        static int     networkPort   = 55555;
-
-        void main(String[] args) throws Exception {
-            loadScores();
-            parseARG(args);
-
-            if (networkMode) runNetworkGame();
-            else             runLocalGame();
-        }
-
-        void runLocalGame() throws Exception {
-            Scanner scanner = new Scanner(System.in);
-
-            final String HUMAN = colorOf("X") + "X" + RESET;
-            final String BOT   = colorOf("O") + "O" + RESET;
-
-            String[][] board = newBoard();
-            String currentPlayer = startPlayer.equals("O") ? BOT : HUMAN;
-            boolean gameOver = false;
-
-            while (!gameOver) {
-                clearConsole();
-                displayBoard(board);
-                IO.println("\n Player " + currentPlayer + "'s turn"
-                        + (turnTimerSeconds > 0 ? "  [" + turnTimerSeconds + "s limit]" : ""));
-
-                int row, col;
-                if (botplay && currentPlayer.equals(BOT)) {
-                    int[] move = botMove(board, difficulty, BOT, HUMAN);
-                    row = move[0];
-                    col = move[1];
-                } else {
-                    int[] input = readMoveWithTimer(scanner, turnTimerSeconds);
-                    if (input == null) {
-                        clearConsole();
-                        displayBoard(board);
-                        IO.println(YELLOW + BOLD + "\n Time's up! Turn forfeited." + RESET);
-                        Thread.sleep(1500);
-                        currentPlayer = currentPlayer.equals(HUMAN) ? BOT : HUMAN;
-                        continue;
-                    }
-                    row = input[0];
-                    col = input[1];
-                }
-
-                if (makeMove(board, row, col, currentPlayer)) {
-                    if (checkWin(board, currentPlayer)) {
-                        clearConsole();
-                        displayBoard(board);
-                        IO.println("\n Player " + currentPlayer + " Wins!");
-                        String mark = currentPlayer.contains("X") ? "X" : "O";
-                        recordWin(mark);
-                        printScores();
-                        gameOver = true;
-                    } else if (isBoardFull(board)) {
-                        clearConsole();
-                        displayBoard(board);
-                        IO.println("\n It's a draw!");
-                        recordDraw();
-                        printScores();
-                        gameOver = true;
-                    } else {
-                        currentPlayer = currentPlayer.equals(HUMAN) ? BOT : HUMAN;
-                    }
-                } else {
-                    IO.println("Invalid Move! Try again.");
-                }
-            }
-            saveScores();
-            scanner.close();
-        }
-
-        void runNetworkGame() throws Exception {
-            Socket socket;
-            if (isServer) {
-                IO.println(CYAN + BOLD + " [Server] Waiting for opponent on port " + networkPort + "..." + RESET);
-                ServerSocket ss = new ServerSocket(networkPort);
-                socket = ss.accept();
-                ss.close();
-                IO.println(GREEN + " Opponent connected from " + socket.getInetAddress() + RESET);
-            } else {
-                IO.println(CYAN + BOLD + " [Client] Connecting to " + serverAddress + ":" + networkPort + "..." + RESET);
-                socket = new Socket(serverAddress, networkPort);
-                IO.println(GREEN + " Connected!" + RESET);
-            }
-
-            PrintWriter    out     = new PrintWriter(socket.getOutputStream(), true);
-            BufferedReader netIn   = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            Scanner        scanner = new Scanner(System.in);
-
-            String opponentName;
-            if (isServer) {
-                out.println("SIZE="    + size);
-                out.println("START="   + startPlayer);
-                out.println("TIMER="   + turnTimerSeconds);
-                out.println("NAME="    + username);
-                String nameLine = netIn.readLine();
-                opponentName = (nameLine != null && nameLine.startsWith("NAME="))
-                        ? nameLine.substring(5).trim() : "Opponent";
-            } else {
-                String sizeLine  = netIn.readLine();
-                String startLine = netIn.readLine();
-                String timerLine = netIn.readLine();
-                String nameLine  = netIn.readLine();
-                if (sizeLine  != null && sizeLine.startsWith("SIZE="))   size              = Integer.parseInt(sizeLine.substring(5).trim());
-                if (startLine != null && startLine.startsWith("START=")) startPlayer       = startLine.substring(6).trim();
-                if (timerLine != null && timerLine.startsWith("TIMER=")) turnTimerSeconds  = Integer.parseInt(timerLine.substring(6).trim());
-                opponentName = (nameLine != null && nameLine.startsWith("NAME=")) ? nameLine.substring(5).trim() : "Opponent";
-                out.println("NAME=" + username);
-                IO.println(CYAN + " Synced from server — board: " + size + "x" + size
-                        + (turnTimerSeconds > 0 ? ", timer: " + turnTimerSeconds + "s" : "") + RESET);
-            }
-
-            final String MY_MARK    = isServer ? "X" : "O";
-            final String THEIR_MARK = isServer ? "O" : "X";
-            final String MY_SYMBOL    = colorOf(MY_MARK)    + MY_MARK    + RESET;
-            final String THEIR_SYMBOL = colorOf(THEIR_MARK) + THEIR_MARK + RESET;
-
-            String myLabel     = BOLD + username      + RESET + " (" + MY_SYMBOL    + ")";
-            String theirLabel  = BOLD + opponentName  + RESET + " (" + THEIR_SYMBOL + ")";
-            String matchHeader = isServer
-                    ? " " + myLabel + "  vs  " + theirLabel
-                    : " " + theirLabel + "  vs  " + myLabel;
-
-            String[][] board = newBoard();
-            boolean myTurn   = MY_MARK.equals(startPlayer);
-
-            IO.println(matchHeader);
-            IO.println(" You are " + MY_SYMBOL + (myTurn ? " — You go first!" : " — Opponent goes first."));
-            Thread.sleep(1200);
-
-            boolean gameOver = false;
-            while (!gameOver) {
-                clearConsole();
-                IO.println(matchHeader);
-                displayBoard(board);
-
-                if (myTurn) {
-                    IO.println("\n Your turn (" + MY_SYMBOL + ")"
-                            + (turnTimerSeconds > 0 ? "  [" + turnTimerSeconds + "s]" : ""));
-
-                    int[] input = readMoveWithTimer(scanner, turnTimerSeconds);
-                    if (input == null) {
-                        out.println("TIMEOUT");
-                        clearConsole();
-                        IO.println(matchHeader);
-                        displayBoard(board);
-                        IO.println(YELLOW + BOLD + "\n Time's up! Your turn was forfeited." + RESET);
-                        Thread.sleep(1500);
-                        myTurn = !myTurn;
-                        continue;
-                    }
-
-                    int row = input[0], col = input[1];
-                    if (!makeMove(board, row, col, MY_SYMBOL)) {
-                        IO.println("Invalid move, try again.");
-                        continue;
-                    }
-                    out.println(row + "," + col);
-
-                } else {
-                    IO.println("\n Waiting for " + BOLD + opponentName + RESET + "'s move..."
-                            + (turnTimerSeconds > 0 ? "  [" + turnTimerSeconds + "s]" : ""));
-                    String line = netIn.readLine();
-                    if (line == null) { IO.println("Opponent disconnected."); break; }
-                    if (line.equals("TIMEOUT")) {
-                        clearConsole();
-                        IO.println(matchHeader);
-                        displayBoard(board);
-                        IO.println(YELLOW + "\n " + opponentName + "'s turn timed out — your turn!" + RESET);
-                        Thread.sleep(1500);
-                        myTurn = !myTurn;
-                        continue;
-                    }
-                    String[] parts = line.split(",");
-                    int row = Integer.parseInt(parts[0].trim());
-                    int col = Integer.parseInt(parts[1].trim());
-                    makeMove(board, row, col, THEIR_SYMBOL);
-                }
-
-                String lastMover = myTurn ? MY_SYMBOL : THEIR_SYMBOL;
-                if (checkWin(board, lastMover)) {
-                    clearConsole();
-                    IO.println(matchHeader);
-                    displayBoard(board);
-                    if (myTurn) {
-                        IO.println(GREEN + BOLD + "\n You Win, " + username + "!" + RESET);
-                        recordWin(MY_MARK);
-                    } else {
-                        IO.println(YELLOW + BOLD + "\n " + opponentName + " Wins!" + RESET);
-                        recordWin(THEIR_MARK);
-                    }
-                    printScores();
-                    gameOver = true;
-                } else if (isBoardFull(board)) {
-                    clearConsole();
-                    IO.println(matchHeader);
-                    displayBoard(board);
-                    IO.println(CYAN + "\n It's a draw!" + RESET);
-                    recordDraw();
-                    printScores();
-                    gameOver = true;
-                }
-
-                myTurn = !myTurn;
-            }
-            saveScores();
-            socket.close();
-            scanner.close();
-        }
-
-        int[] readMoveWithTimer(Scanner scanner, int seconds) throws Exception {
-            if (seconds <= 0) {
-                IO.print(" Enter Row # (0-" + (size - 1) + ") ");
-                int row = scanner.nextInt();
-                IO.print(" Enter column (0-" + (size - 1) + ") ");
-                int col = scanner.nextInt();
-                return new int[]{row, col};
-            }
-
-            AtomicBoolean inputDone    = new AtomicBoolean(false);
-            AtomicBoolean timedOut     = new AtomicBoolean(false);
-            int[]         result       = new int[2];
-
-            Thread countdown = new Thread(() -> {
-                for (int remaining = seconds; remaining >= 0 && !inputDone.get(); remaining--) {
-                    String color = remaining <= 5 ? RED + BOLD : YELLOW;
-                    System.out.print("\r " + color + "⏱  " + remaining + "s remaining " + RESET + "   ");
-                    System.out.flush();
-                    try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
-                }
-                if (!inputDone.get()) timedOut.set(true);
-            });
-            countdown.setDaemon(true);
-            countdown.start();
-
-            ExecutorService exec = Executors.newSingleThreadExecutor();
-            Future<int[]> future = exec.submit(() -> {
-                System.out.print("\n Enter Row # (0-" + (size - 1) + ") ");
-                int row = scanner.nextInt();
-                System.out.print(" Enter column (0-" + (size - 1) + ") ");
-                int col = scanner.nextInt();
-                return new int[]{row, col};
-            });
-
-            try {
-                int[] move = future.get(seconds, TimeUnit.SECONDS);
-                inputDone.set(true);
-                countdown.interrupt();
-                exec.shutdownNow();
-                System.out.println();                return move;
-            } catch (TimeoutException e) {
-                future.cancel(true);
-                exec.shutdownNow();
-                System.out.println();
-                return null;            } catch (ExecutionException e) {
-                exec.shutdownNow();
-                return null;
-            }
-        }
-
-        String[][] newBoard() {
-            String[][] b = new String[size][size];
-            for (String[] r : b) Arrays.fill(r, " ");
-            return b;
-        }
-
-        void displayBoard(String[][] board) {
-            int n = board.length;
-            int w = String.valueOf(n - 1).length();
-            String G = COLOR_GRID;
-
-            IO.print(" ".repeat(w + 1));
-            for (int c = 0; c < n; c++) {
-                IO.print(String.format("%" + w + "d", c));
-                if (c < n - 1) IO.print(G + "   " + RESET);
-            }
-            IO.println();
-
-            for (int row = 0; row < n; row++) {
-                IO.print(String.format("%" + w + "d ", row));
-                for (int col = 0; col < n; col++) {
-                    IO.print(" ".repeat(w - 1) + board[row][col]);
-                    if (col < n - 1) IO.print(G + " | " + RESET);
-                }
-                IO.println();
-                if (row < n - 1)
-                    IO.println(G + " ".repeat(w) + "-".repeat(n * (w + 3) - 2) + RESET);
-            }
-        }
-
-        boolean makeMove(String[][] board, int row, int col, String player) {
-            int n = board.length;
-            if (row >= 0 && row < n && col >= 0 && col < n && board[row][col].equals(" ")) {
-                board[row][col] = player;
-                return true;
-            }
-            return false;
-        }
-
-        boolean checkWin(String[][] board, String player) {
-            int n = board.length;
-            for (int i = 0; i < n; i++) {
-                boolean rowWin = true, colWin = true;
-                for (int j = 0; j < n; j++) {
-                    if (!board[i][j].equals(player)) rowWin = false;
-                    if (!board[j][i].equals(player)) colWin = false;
-                }
-                if (rowWin || colWin) return true;
-            }
-            boolean d1 = true, d2 = true;
-            for (int i = 0; i < n; i++) {
-                if (!board[i][i].equals(player))         d1 = false;
-                if (!board[i][n - 1 - i].equals(player)) d2 = false;
-            }
-            return d1 || d2;
-        }
-
-        boolean isBoardFull(String[][] board) {
-            for (String[] row : board)
-                for (String cell : row)
-                    if (cell.equals(" ")) return false;
-            return true;
-        }
-
-        int[] botMove(String[][] board, String difficulty, String bot, String human) {
-            if (difficulty.equals("hard") && board.length == 3) return bestMove(board, bot, human);
-            if (!difficulty.equals("easy")) {
-                int[] m = findWinningMove(board, bot);   if (m != null) return m;
-                m = findWinningMove(board, human);       if (m != null) return m;
-            }
-            return randomMove(board);
-        }
-
-        int[] randomMove(String[][] board) {
-            List<int[]> empty = new ArrayList<>();
-            for (int r = 0; r < board.length; r++)
-                for (int c = 0; c < board.length; c++)
-                    if (board[r][c].equals(" ")) empty.add(new int[]{r, c});
-            return empty.get(new Random().nextInt(empty.size()));
-        }
-
-        int[] findWinningMove(String[][] board, String player) {
-            int n = board.length;
-            for (int r = 0; r < n; r++)
-                for (int c = 0; c < n; c++)
-                    if (board[r][c].equals(" ")) {
-                        board[r][c] = player;
-                        boolean wins = checkWin(board, player);
-                        board[r][c] = " ";
-                        if (wins) return new int[]{r, c};
-                    }
-            return null;
-        }
-
-        int[] bestMove(String[][] board, String bot, String human) {
-            int bestScore = Integer.MIN_VALUE;
-            int[] best = null;
-            for (int r = 0; r < 3; r++)
-                for (int c = 0; c < 3; c++)
-                    if (board[r][c].equals(" ")) {
-                        board[r][c] = bot;
-                        int score = minimax(board, false, bot, human);
-                        board[r][c] = " ";
-                        if (score > bestScore) { bestScore = score; best = new int[]{r, c}; }
-                    }
-            return best;
-        }
-
-        int minimax(String[][] board, boolean botTurn, String bot, String human) {
-            if (checkWin(board, bot))   return 1;
-            if (checkWin(board, human)) return -1;
-            if (isBoardFull(board))     return 0;
-            int best = botTurn ? Integer.MIN_VALUE : Integer.MAX_VALUE;
-            for (int r = 0; r < 3; r++)
-                for (int c = 0; c < 3; c++)
-                    if (board[r][c].equals(" ")) {
-                        board[r][c] = botTurn ? bot : human;
-                        int score = minimax(board, !botTurn, bot, human);
-                        board[r][c] = " ";
-                        best = botTurn ? Math.max(best, score) : Math.min(best, score);
-                    }
-            return best;
-        }
-
+static final String SCORES_FILE = "scores.ini";
+static final String SAVE_FILE = "savegame.properties";
+static final String FRIENDS_FILE = "friends.ini";
+static final String SERVERS_FILE = "servers.ini";
+static final List<ServerEntry> configuredServers = new ArrayList<>();
+static final int FRIENDS_PORT = 2002;
+static final int FRIEND_TIMEOUT_MS = 700;
+static final Map<String, Friend> friends = new LinkedHashMap<>();
+static final String MODE_CLASSIC = "classic";
+static final String MODE_MISERE = "misere";
+static final String MODE_CONNECT = "connect";
+static String gameMode = MODE_CLASSIC;
+static boolean uiMode = false;
+static boolean resumeRequested = false;
+static boolean ansiEnabled = true;
+static boolean networkMode = false;
+static boolean isServer = false;
+static String serverAddress = "localhost";
+static int networkPort = 2000;
+static final int DISCOVERY_PORT = 2001;
+static int serverRooms = 4;
+static String requestedRoom = "1";
+static int discoveryTimeoutMs = 1500;
+static boolean connected;
         static int winsX = 0, winsO = 0, draws = 0;
-        static int streakX = 0, streakO = 0;        static int bestStreakX = 0, bestStreakO = 0;
-        void recordWin(String mark) {
-            if (mark.equals("X")) {
-                winsX++;
-                streakX++;
-                streakO = 0;
-                if (streakX > bestStreakX) bestStreakX = streakX;
+        static int streakX = 0, streakO = 0, bestStreakX = 0, bestStreakO = 0;
+        static int gamesPlayed = 0, movesPlayed = 0, timeouts = 0;
+static int credits = 100;
+static final Map<String, Integer> powerups = new TreeMap<>();
+static final String POWER_UNDO = "undo";
+static final String POWER_FREEZE = "freeze";
+static final String POWER_EXTRA = "extra";
+static final String POWER_SHIELD = "shield";
+static final Set<String> achievements = new TreeSet<>();
+
+void main(String[] args) throws Exception {
+    loadScores();
+    loadFriends();
+    loadConfiguredServers();
+    parseARG(args);
+    if (!ansiEnabled) disableColors();
+    clearConsole();
+    startFriendPresenceResponder();
+    connected = pingWithAnimation("github.com");
+    if (networkMode) {
+        if (isServer && uiMode) networkMenu();
+        else runNetworkGame();
+    } else if (uiMode) {
+        mainMenu();
+    } else {
+        runLocalGame();
+    }
+}
+
+void mainMenu() throws Exception {
+    Scanner scanner = new Scanner(System.in);
+    if (resumeRequested) {
+        resumeRequested = false;
+        if (Files.exists(Paths.get(SAVE_FILE))) resumeGame(scanner);
+        else pauseMessage(scanner, "No saved single-player game found.");
+    }
+    while (true) {
+        clearConsole();
+        refreshFriendStatuses();
+        int onlineFriends = countOnlineFriends();
+        IO.println(CYAN + BOLD + "╔══════════════════════════════════════╗" + RESET);
+        IO.println(CYAN + "║          Tic-Tac-Java v1.4           ║" + RESET);
+        IO.println(CYAN + "╠══════════════════════════════════════╣" + RESET);
+        IO.println("║ Player: " + BOLD + String.format("%-28s", username) + RESET + " ║");
+        IO.println("║ Mode:  " + String.format("%-10s", gameModeName(gameMode)) + " Board: " + String.format("%-12s", size + "x" + size) + "║");
+        String status = connected ? "Connected" : "Disconnected";
+        IO.println("║ AtomicWFC Status: " + String.format("%-17s", status) + "  ║");
+        IO.println("║ Friends: " + String.format("%-27s", friends.size()) + " ║");
+        IO.println("║ Friends Online: " + String.format("%-21s", onlineFriends) + "║");
+        IO.println(CYAN + "╚══════════════════════════════════════╝" + RESET);
+        IO.println("");
+        IO.println("  1. Local 2-player game");
+        IO.println("  2. Play against AI");
+        IO.println("  3. Resume saved game");
+        IO.println("  4. Change game settings");
+        IO.println("  5. Scores & achievements");
+        IO.println("  6. Network game");
+        IO.println("  7. Help");
+        IO.println("  8. Friends");
+        IO.println("  9. Shop & powerups");
+        IO.println("  0. Quit");
+        IO.print("\n Select: ");
+        String choice = scanner.nextLine().trim();
+        switch (choice) {
+            case "1" -> { botplay = false; if (gameSetupMenu(scanner, false)) runLocalGame(scanner, false); }
+            case "2" -> { botplay = true; if (gameSetupMenu(scanner, true)) runLocalGame(scanner, false); }
+            case "3" -> { if (!resumeGame(scanner)) pauseMessage(scanner, "No saved game found."); }
+            case "4" -> settingsMenu(scanner);
+            case "5" -> { clearConsole(); printScores(); printAchievements(); pauseMessage(scanner, "Press Enter to return..."); }
+            case "6" -> networkMenu(scanner);
+            case "7" -> { clearConsole(); Help(); pauseMessage(scanner, "Press Enter to return..."); }
+            case "8" -> friendsMenu(scanner);
+            case "9" -> shopMenu(scanner);
+            case "0", "q", "quit", "exit" -> { saveScores(); saveFriends(); return; }
+            default -> pauseMessage(scanner, "Invalid selection.");
+        }
+    }
+}
+
+void shopMenu(Scanner scanner) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Atomic Shop ─────────────────────────" + RESET);
+        IO.println("  Credits: " + YELLOW + credits + RESET);
+        IO.println("");
+        IO.println("  1. Undo Move       30 credits   (undo your previous move)");
+        IO.println("  2. Freeze AI       40 credits   (skip the AI's next turn)");
+        IO.println("  3. Extra Turn      50 credits   (take another move after yours)");
+        IO.println("  4. Shield          60 credits   (block one AI winning move)");
+        IO.println("");
+        IO.println("  Inventory:");
+        IO.println("    Undo: " + powerupCount(POWER_UNDO) + "   Freeze: " + powerupCount(POWER_FREEZE)
+                + "   Extra: " + powerupCount(POWER_EXTRA) + "   Shield: " + powerupCount(POWER_SHIELD));
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        String choice = scanner.nextLine().trim();
+        if (choice.equals("0")) { saveScores(); return; }
+        String type = switch (choice) { case "1" -> POWER_UNDO; case "2" -> POWER_FREEZE; case "3" -> POWER_EXTRA; case "4" -> POWER_SHIELD; default -> null; };
+        if (type == null) { pauseMessage(scanner, "Invalid selection."); continue; }
+        int cost = powerupCost(type);
+        if (credits < cost) { pauseMessage(scanner, "Not enough credits."); continue; }
+        credits -= cost;
+        powerups.merge(type, 1, Integer::sum);
+        saveScores();
+        pauseMessage(scanner, "Purchased " + powerupName(type) + ".");
+    }
+}
+
+static int powerupCount(String type) { return powerups.getOrDefault(type, 0); }
+static int powerupCost(String type) { return switch (type) { case POWER_UNDO -> 30; case POWER_FREEZE -> 40; case POWER_EXTRA -> 50; case POWER_SHIELD -> 60; default -> 0; }; }
+static String powerupName(String type) { return switch (type) { case POWER_UNDO -> "Undo Move"; case POWER_FREEZE -> "Freeze AI"; case POWER_EXTRA -> "Extra Turn"; case POWER_SHIELD -> "Shield"; default -> type; }; }
+static boolean consumePowerup(String type) { int n = powerupCount(type); if (n <= 0) return false; if (n == 1) powerups.remove(type); else powerups.put(type, n - 1); return true; }
+
+static class Friend {
+    String name;
+    String address;
+    int port;
+    boolean online;
+    long pingMs;
+    Friend(String name, String address, int port) { this.name = name; this.address = address; this.port = port; }
+}
+
+void friendsMenu(Scanner scanner) {
+    while (true) {
+        refreshFriendStatuses();
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Friends ─────────────────────────────" + RESET);
+        IO.println("  You: " + BOLD + username + RESET);
+        IO.println("  Online: " + countOnlineFriends() + "/" + friends.size());
+        IO.println("");
+        if (friends.isEmpty()) {
+            IO.println(YELLOW + "  No friends added yet." + RESET);
+            IO.println("  Add someone using their display name and network address.\n");
+        } else {
+            int i = 1;
+            for (Friend f : friends.values()) {
+                String status = f.online ? GREEN + "● Online" + RESET + " (" + f.pingMs + " ms)" : RED + "○ Offline" + RESET;
+                IO.println("  " + i++ + ". " + BOLD + f.name + RESET + " — " + status + "  [" + f.address + ":" + f.port + "]");
+            }
+            IO.println("");
+        }
+        IO.println("  1. Add friend");
+        IO.println("  2. Remove friend");
+        IO.println("  3. Refresh statuses");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        String choice = scanner.nextLine().trim();
+        switch (choice) {
+            case "1" -> addFriend(scanner);
+            case "2" -> removeFriend(scanner);
+            case "3" -> { refreshFriendStatuses(); pauseMessage(scanner, "Friend statuses refreshed."); }
+            case "0" -> { saveFriends(); return; }
+            default -> pauseMessage(scanner, "Invalid selection.");
+        }
+    }
+}
+
+void addFriend(Scanner scanner) {
+    clearConsole();
+    IO.println(CYAN + BOLD + "\n── Add Friend ──────────────────────────" + RESET);
+    IO.print(" Display name: ");
+    String name = scanner.nextLine().trim();
+    if (name.isBlank()) { pauseMessage(scanner, "A friend name is required."); return; }
+    if (name.equalsIgnoreCase(username)) { pauseMessage(scanner, "You cannot add yourself."); return; }
+    IO.print(" Address / hostname: ");
+    String address = scanner.nextLine().trim();
+    if (address.isBlank()) { pauseMessage(scanner, "An address is required."); return; }
+    IO.print(" Presence port [" + FRIENDS_PORT + "]: ");
+    String portText = scanner.nextLine().trim();
+    int port = FRIENDS_PORT;
+    if (!portText.isBlank()) {
+        try { port = clamp(Integer.parseInt(portText), 1, 65535); }
+        catch (NumberFormatException e) { pauseMessage(scanner, "Invalid port."); return; }
+    }
+    friends.put(name.toLowerCase(Locale.ROOT), new Friend(name, address, port));
+    saveFriends();
+    refreshFriendStatuses();
+    pauseMessage(scanner, friends.get(name.toLowerCase(Locale.ROOT)).online ? "Friend added — currently online." : "Friend added — currently offline.");
+}
+
+void removeFriend(Scanner scanner) {
+    if (friends.isEmpty()) { pauseMessage(scanner, "There are no friends to remove."); return; }
+    IO.print(" Remove friend number: ");
+    try {
+        int pick = Integer.parseInt(scanner.nextLine().trim());
+        if (pick < 1 || pick > friends.size()) { pauseMessage(scanner, "Invalid friend number."); return; }
+        Friend f = new ArrayList<>(friends.values()).get(pick - 1);
+        friends.remove(f.name.toLowerCase(Locale.ROOT));
+        saveFriends();
+        pauseMessage(scanner, f.name + " removed.");
+    } catch (NumberFormatException e) { pauseMessage(scanner, "Invalid number."); }
+}
+
+void refreshFriendStatuses() {
+    for (Friend f : friends.values()) {
+        long start = System.currentTimeMillis();
+        f.online = false;
+        f.pingMs = 0;
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.setSoTimeout(FRIEND_TIMEOUT_MS);
+            byte[] request = ("TTT_FRIEND_PING|" + username).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            socket.send(new DatagramPacket(request, request.length, InetAddress.getByName(f.address), f.port));
+            byte[] buf = new byte[256];
+            DatagramPacket response = new DatagramPacket(buf, buf.length);
+            socket.receive(response);
+            String text = new String(response.getData(), 0, response.getLength(), java.nio.charset.StandardCharsets.UTF_8);
+            f.online = text.startsWith("TTT_FRIEND_PONG|");
+            if (f.online) f.pingMs = System.currentTimeMillis() - start;
+        } catch (Exception ignored) { }
+    }
+}
+
+int countOnlineFriends() {
+    int n = 0;
+    for (Friend f : friends.values()) if (f.online) n++;
+    return n;
+}
+
+void startFriendPresenceResponder() {
+    Thread t = new Thread(() -> {
+        try (DatagramSocket socket = new DatagramSocket(FRIENDS_PORT)) {
+            byte[] buf = new byte[512];
+            while (!Thread.currentThread().isInterrupted()) {
+                DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                socket.receive(packet);
+                String request = new String(packet.getData(), 0, packet.getLength(), java.nio.charset.StandardCharsets.UTF_8);
+                if (!request.startsWith("TTT_FRIEND_PING|")) continue;
+                byte[] response = ("TTT_FRIEND_PONG|" + username).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                socket.send(new DatagramPacket(response, response.length, packet.getAddress(), packet.getPort()));
+            }
+        } catch (Exception ignored) { }
+    }, "ttt-friend-presence");
+    t.setDaemon(true);
+    t.start();
+}
+
+static void loadFriends() {
+    friends.clear();
+    Properties p = new Properties();
+    try (InputStream in = Files.newInputStream(Paths.get(FRIENDS_FILE))) {
+        p.load(in);
+        int count = getInt(p, "count", 0);
+        for (int i = 0; i < count; i++) {
+            String prefix = "friend." + i + ".";
+            String name = p.getProperty(prefix + "name", "").trim();
+            String address = p.getProperty(prefix + "address", "").trim();
+            int port = getInt(p, prefix + "port", FRIENDS_PORT);
+            if (!name.isBlank() && !address.isBlank()) friends.put(name.toLowerCase(Locale.ROOT), new Friend(name, address, clamp(port, 1, 65535)));
+        }
+    } catch (IOException ignored) { }
+}
+
+static void saveFriends() {
+    Properties p = new Properties();
+    p.setProperty("count", String.valueOf(friends.size()));
+    int i = 0;
+    for (Friend f : friends.values()) {
+        String prefix = "friend." + i++ + ".";
+        p.setProperty(prefix + "name", f.name);
+        p.setProperty(prefix + "address", f.address);
+        p.setProperty(prefix + "port", String.valueOf(f.port));
+    }
+    try (OutputStream out = Files.newOutputStream(Paths.get(FRIENDS_FILE))) { p.store(out, "Tic-Tac-Java friends"); }
+    catch (IOException e) { System.err.println("Could not save friends: " + e.getMessage()); }
+}
+
+void settingsMenu(Scanner scanner) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Game Settings ─────────────────────" + RESET);
+        IO.println("  1. Board size       : " + size);
+        IO.println("  2. Game mode        : " + gameModeName(gameMode));
+        IO.println("  3. Starting player  : " + startPlayer);
+        IO.println("  4. AI difficulty    : " + difficulty);
+        IO.println("  5. Turn timer       : " + (turnTimerSeconds == 0 ? "off" : turnTimerSeconds + "s"));
+        IO.println("  6. Player name      : " + username);
+        IO.println("  7. Toggle ANSI      : " + ansiEnabled);
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        String choice = scanner.nextLine().trim();
+        try {
+            switch (choice) {
+                case "1" -> {
+                    IO.print("Board size (3-20): ");
+                    size = clamp(Integer.parseInt(scanner.nextLine().trim()), 3, 20);
+                }
+                case "2" -> gameModeMenu(scanner);
+                case "3" -> startPlayerMenu(scanner);
+                case "4" -> difficultyMenu(scanner);
+                case "5" -> {
+                    IO.print("Timer seconds (0 to disable): ");
+                    turnTimerSeconds = Math.max(0, Integer.parseInt(scanner.nextLine().trim()));
+                }
+                case "6" -> {
+                    IO.print("Player name: ");
+                    String n = scanner.nextLine().trim();
+                    if (!n.isEmpty()) username = n;
+                }
+                case "7" -> { ansiEnabled = !ansiEnabled; if (!ansiEnabled) disableColors(); }
+                case "0" -> { saveScores(); return; }
+                default -> { }
+            }
+        } catch (NumberFormatException ignored) { pauseMessage(scanner, "Please enter a valid number."); }
+        saveScores();
+    }
+}
+
+void gameModeMenu(Scanner scanner) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Game Mode ──────────────────────────" + RESET);
+        IO.println("  1. Classic      — complete a line to win");
+        IO.println("  2. Misère       — complete a line and you lose");
+        IO.println("  3. Connect-3    — get 3 in a row anywhere");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        switch (scanner.nextLine().trim()) {
+            case "1" -> { gameMode = MODE_CLASSIC; return; }
+            case "2" -> { gameMode = MODE_MISERE; return; }
+            case "3" -> { gameMode = MODE_CONNECT; return; }
+            case "0" -> { return; }
+            default -> pauseMessage(scanner, "Invalid selection.");
+        }
+    }
+}
+
+void difficultyMenu(Scanner scanner) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── AI Difficulty ──────────────────────" + RESET);
+        IO.println("  1. Easy        — random moves");
+        IO.println("  2. Normal      — attacks and blocks");
+        IO.println("  3. Hard        — strongest available AI");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        switch (scanner.nextLine().trim()) {
+            case "1" -> { difficulty = "easy"; return; }
+            case "2" -> { difficulty = "normal"; return; }
+            case "3" -> { difficulty = "hard"; return; }
+            case "0" -> { return; }
+            default -> pauseMessage(scanner, "Invalid selection.");
+        }
+    }
+}
+
+void startPlayerMenu(Scanner scanner) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Starting Player ────────────────────" + RESET);
+        IO.println("  1. X goes first");
+        IO.println("  2. O goes first");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        switch (scanner.nextLine().trim()) {
+            case "1" -> { startPlayer = "X"; return; }
+            case "2" -> { startPlayer = "O"; return; }
+            case "0" -> { return; }
+            default -> pauseMessage(scanner, "Invalid selection.");
+        }
+    }
+}
+
+boolean gameSetupMenu(Scanner scanner, boolean againstAI) {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n╔══════════════════════════════════════╗");
+        IO.println("║            GAME SETUP                ║");
+        IO.println("╚══════════════════════════════════════╝" + RESET);
+        IO.println("  Opponent : " + (againstAI ? "AI" : "Local player"));
+        IO.println("  Mode     : " + gameModeName(gameMode));
+        IO.println("  Difficulty: " + (againstAI ? difficulty : "N/A"));
+        IO.println("  Board    : " + size + "x" + size);
+        IO.println("  First    : " + startPlayer);
+        IO.println("  Timer    : " + (turnTimerSeconds == 0 ? "Off" : turnTimerSeconds + "s"));
+        IO.println("\n  1. Game mode");
+        if (againstAI) IO.println("  2. AI difficulty");
+        IO.println("  3. Board size");
+        IO.println("  4. Starting player");
+        IO.println("  5. Turn timer");
+        IO.println("  6. Start game");
+        IO.println("  0. Cancel");
+        IO.print("\n Select: ");
+        String c = scanner.nextLine().trim();
+        try {
+            switch (c) {
+                case "1" -> gameModeMenu(scanner);
+                case "2" -> { if (againstAI) difficultyMenu(scanner); else pauseMessage(scanner, "Difficulty only applies to AI games."); }
+                case "3" -> {
+                    IO.print("Board size (3-20) [" + size + "]: ");
+                    String v = scanner.nextLine().trim();
+                    if (!v.isEmpty()) size = clamp(Integer.parseInt(v), 3, 20);
+                }
+                case "4" -> startPlayerMenu(scanner);
+                case "5" -> {
+                    IO.print("Timer seconds (0 = off) [" + turnTimerSeconds + "]: ");
+                    String v = scanner.nextLine().trim();
+                    if (!v.isEmpty()) turnTimerSeconds = Math.max(0, Integer.parseInt(v));
+                }
+                case "6" -> { saveScores(); return true; }
+                case "0" -> { return false; }
+                default -> pauseMessage(scanner, "Invalid selection.");
+            }
+        } catch (NumberFormatException e) { pauseMessage(scanner, "Please enter a valid number."); }
+    }
+}
+
+void networkMenu() throws Exception {
+    networkMenu(new Scanner(System.in));
+}
+
+void networkMenu(Scanner scanner) throws Exception {
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Network ────────────────────────────" + RESET);
+        IO.println("  1. Host server (" + serverRooms + " rooms, port " + networkPort + ")");
+        IO.println("  2. Join server");
+        IO.println("  3. Scan network for game servers");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        String c = scanner.nextLine().trim();
+
+        if (c.equals("1")) {
+            isServer = true;
+            networkMode = true;
+            IO.print("Hosting port [" + networkPort + "]: ");
+            String port = scanner.nextLine().trim();
+            if (!port.isEmpty()) {
+                try { networkPort = clamp(Integer.parseInt(port), 1, 65535); }
+                catch (Exception ignored) { pauseMessage(scanner, "Invalid port."); continue; }
+            }
+            IO.print("Rooms to host (1-32): ");
+            try { serverRooms = clamp(Integer.parseInt(scanner.nextLine().trim()), 1, 32); }
+            catch (Exception ignored) { }
+            saveScores();
+            runNetworkGame();
+            return;
+        }
+
+        if (c.equals("2")) {
+            joinServerMenu(scanner);
+            continue;
+        }
+
+        if (c.equals("3")) {
+            List<DiscoveredServer> servers = discoverServers();
+            clearConsole();
+            IO.println(CYAN + BOLD + "\n── Network Scan ──────────────────────" + RESET);
+            if (servers.isEmpty()) {
+                IO.println(YELLOW + " No Tic-Tac-Java servers responded." + RESET);
             } else {
-                winsO++;
-                streakO++;
-                streakX = 0;
-                if (streakO > bestStreakO) bestStreakO = streakO;
-            }
-        }
-
-        void recordDraw() {
-            draws++;
-            streakX = 0;
-            streakO = 0;
-        }
-
-        void printScores() {
-            IO.println(BOLD + "\n ── Scores ──────────────────────────" + RESET);
-            IO.println(colorOf("X") + String.format("  X  wins: %-4d  streak: %d  (best: %d)", winsX, streakX, bestStreakX) + RESET);
-            IO.println(colorOf("O") + String.format("  O  wins: %-4d  streak: %d  (best: %d)", winsO, streakO, bestStreakO) + RESET);
-            IO.println(CYAN         + String.format("  Draws  : %d", draws) + RESET);
-            IO.println(BOLD         + " ────────────────────────────────────" + RESET);
-        }
-
-        static void loadScores() {
-            Properties p = new Properties();
-            try (FileInputStream fis = new FileInputStream(SCORES_FILE)) {
-                p.load(fis);
-                winsX       = Integer.parseInt(p.getProperty("wins.X",        "0"));
-                winsO       = Integer.parseInt(p.getProperty("wins.O",        "0"));
-                draws       = Integer.parseInt(p.getProperty("draws",         "0"));
-                streakX     = Integer.parseInt(p.getProperty("streak.X",      "0"));
-                streakO     = Integer.parseInt(p.getProperty("streak.O",      "0"));
-                bestStreakX  = Integer.parseInt(p.getProperty("bestStreak.X", "0"));
-                bestStreakO  = Integer.parseInt(p.getProperty("bestStreak.O", "0"));
-                COLOR_X     = COLOR_MAP.getOrDefault(p.getProperty("color.X",    "RED"),   COLOR_X);
-                COLOR_O     = COLOR_MAP.getOrDefault(p.getProperty("color.O",    "BLUE"),  COLOR_O);
-                COLOR_GRID  = COLOR_MAP.getOrDefault(p.getProperty("color.grid", "WHITE"), COLOR_GRID);
-                startPlayer      = p.getProperty("startPlayer",      "X");
-                username         = p.getProperty("username",         "Player");
-                turnTimerSeconds = Integer.parseInt(p.getProperty("turnTimer", "0"));
-            } catch (IOException e) {
-            }
-        }
-
-        void saveScores() {
-            Properties p = new Properties();
-            p.setProperty("wins.X",       String.valueOf(winsX));
-            p.setProperty("wins.O",       String.valueOf(winsO));
-            p.setProperty("draws",        String.valueOf(draws));
-            p.setProperty("streak.X",     String.valueOf(streakX));
-            p.setProperty("streak.O",     String.valueOf(streakO));
-            p.setProperty("bestStreak.X", String.valueOf(bestStreakX));
-            p.setProperty("bestStreak.O", String.valueOf(bestStreakO));
-            p.setProperty("color.X",      colorName(COLOR_X,    "RED"));
-            p.setProperty("color.O",      colorName(COLOR_O,    "BLUE"));
-            p.setProperty("color.grid",   colorName(COLOR_GRID, "WHITE"));
-            p.setProperty("startPlayer",  startPlayer);
-            p.setProperty("username",     username);
-            p.setProperty("turnTimer",    String.valueOf(turnTimerSeconds));
-            try (FileOutputStream fos = new FileOutputStream(SCORES_FILE)) {
-                p.store(fos, "TicTacToe scores & preferences");
-            } catch (IOException e) {
-                System.err.println("Could not save scores: " + e.getMessage());
-            }
-        }
-
-        String colorName(String ansi, String fallback) {
-            return COLOR_MAP.entrySet().stream()
-                    .filter(e -> e.getValue().equals(ansi))
-                    .map(Map.Entry::getKey)
-                    .findFirst().orElse(fallback);
-        }
-
-        String colorOf(String mark) { return mark.equals("X") ? COLOR_X : COLOR_O; }
-
-        public static void parseARG(String[] args) {
-            for (int i = 0; i < args.length; i++) {
-                switch (args[i]) {
-                    case "--botplay"     -> botplay = true;
-                    case "--easy"        -> difficulty = "easy";
-                    case "--normal"      -> difficulty = "normal";
-                    case "--hard"        -> difficulty = "hard";
-                    case "--size" -> {
-                        if (i + 1 < args.length) {
-                            try { size = Integer.parseInt(args[++i]); }
-                            catch (NumberFormatException e) { System.out.println("Invalid size, using 3"); }
-                        } else System.out.println("--size needs a number");
-                    }
-                    case "--startplayer" -> {
-                        if (i + 1 < args.length) {
-                            String sp = args[++i].toUpperCase();
-                            if (sp.equals("X") || sp.equals("O")) startPlayer = sp;
-                            else System.out.println("--startplayer must be X or O");
-                        }
-                    }
-                    case "--timer" -> {
-                        if (i + 1 < args.length) {
-                            try {
-                                int t = Integer.parseInt(args[++i]);
-                                if (t > 0) turnTimerSeconds = t;
-                                else System.out.println("Timer must be > 0");
-                            } catch (NumberFormatException e) { System.out.println("Invalid timer value"); }
-                        } else System.out.println("--timer needs a number of seconds");
-                    }
-                    case "--name" -> {
-                        if (i + 1 < args.length) username = args[++i];
-                        else System.out.println("--name needs a value");
-                    }
-                    case "--color-x" -> {
-                        if (i + 1 < args.length) {
-                            String code = COLOR_MAP.get(args[++i].toUpperCase());
-                            if (code != null) COLOR_X = code;
-                            else System.out.println("Unknown color. Options: " + COLOR_MAP.keySet());
-                        }
-                    }
-                    case "--color-o" -> {
-                        if (i + 1 < args.length) {
-                            String code = COLOR_MAP.get(args[++i].toUpperCase());
-                            if (code != null) COLOR_O = code;
-                            else System.out.println("Unknown color. Options: " + COLOR_MAP.keySet());
-                        }
-                    }
-                    case "--color-grid" -> {
-                        if (i + 1 < args.length) {
-                            String code = COLOR_MAP.get(args[++i].toUpperCase());
-                            if (code != null) COLOR_GRID = code;
-                            else System.out.println("Unknown color. Options: " + COLOR_MAP.keySet());
-                        }
-                    }
-                    case "--server" -> { networkMode = true; isServer = true; }
-                    case "--client" -> {
-                        networkMode = true; isServer = false;
-                        if (i + 1 < args.length && !args[i + 1].startsWith("--"))
-                            serverAddress = args[++i];
-                    }
-                    case "--port" -> {
-                        if (i + 1 < args.length) {
-                            try { networkPort = Integer.parseInt(args[++i]); }
-                            catch (NumberFormatException e) { System.out.println("Invalid port, using 55555"); }
-                        }
-                    }
-                    case "--reset-scores" -> {
-                        winsX = 0; winsO = 0; draws = 0;
-                        streakX = 0; streakO = 0; bestStreakX = 0; bestStreakO = 0;
-                        System.out.println("Scores reset.");
-                    }
-                    case "--scores" -> {
-                        loadScores();
-                        System.out.printf("X wins: %d (streak: %d, best: %d) | O wins: %d (streak: %d, best: %d) | Draws: %d%n",
-                                winsX, streakX, bestStreakX, winsO, streakO, bestStreakO, draws);
-                        System.exit(0);
-                    }
-                    case "--help" -> { Help(); System.exit(0); }
-                    default -> System.out.println("Unknown argument: " + args[i]);
+                for (int i = 0; i < servers.size(); i++) {
+                    DiscoveredServer d = servers.get(i);
+                    IO.println("  [" + (i + 1) + "] " + d.name + "  (" + d.rooms + " rooms)  " + d.address + ":" + d.port);
                 }
             }
-            if (size < 3) { System.out.println("Size must be at least 3, using 3"); size = 3; }
+            pauseMessage(scanner, "Press Enter to return...");
+            continue;
         }
 
-        public static void clearConsole() {
-            try {
-                String os = System.getProperty("os.name");
-                if (os.contains("Windows")) new ProcessBuilder("cmd", "/c", "cls").inheritIO().start().waitFor();
-                else                        new ProcessBuilder("clear").inheritIO().start().waitFor();
-            } catch (IOException | InterruptedException e) { e.printStackTrace(); }
+        if (c.equals("0")) return;
+    }
+}
+
+void joinServerMenu(Scanner scanner) throws Exception {
+    List<ServerEntry> entries = buildJoinServerList();
+
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── Join Server ───────────────────────" + RESET);
+        for (int i = 0; i < entries.size(); i++) {
+            ServerEntry s = entries.get(i);
+            String rooms = s.rooms > 0 ? "  (" + s.rooms + " rooms)" : "";
+            String state = s.configured || s.discovered ? "" : "  [not configured]";
+            IO.println("[" + (i + 1) + "] " + s.name + rooms + state);
+        }
+        int manualIndex = entries.size() + 1;
+        IO.println("[" + manualIndex + "] Enter Manual Address");
+        IO.print("\n Select: ");
+
+        String input = scanner.nextLine().trim();
+        int pick;
+        try { pick = Integer.parseInt(input); }
+        catch (NumberFormatException e) { pauseMessage(scanner, "Invalid selection."); continue; }
+        if (pick == 0) return;
+
+        if (pick == manualIndex) {
+            IO.print("Server address [" + serverAddress + "]: ");
+            String address = scanner.nextLine().trim();
+            if (!address.isEmpty()) serverAddress = address;
+            IO.print("Port [" + networkPort + "]: ");
+            String port = scanner.nextLine().trim();
+            if (!port.isEmpty()) {
+                try { networkPort = clamp(Integer.parseInt(port), 1, 65535); }
+                catch (Exception e) { pauseMessage(scanner, "Invalid port."); continue; }
+            }
+            chooseRoomAndConnect(scanner);
+            return;
         }
 
-        static void Help() {
-            String help = """
-        \u001B[1;36m# TicTacToe — Help\u001B[0m
+        if (pick < 1 || pick > entries.size()) {
+            pauseMessage(scanner, "Invalid selection.");
+            continue;
+        }
 
-        \u001B[1;32mBasic usage:\u001B[0m
-          java Main                             Local 2-player
-          java Main --botplay --hard            Play against hard AI
+        ServerEntry selected = entries.get(pick - 1);
+        if (!selected.configured && !selected.discovered) {
+            pauseMessage(scanner, selected.name + " has not been configured yet. Add it to " + SERVERS_FILE + ".");
+            continue;
+        }
+        serverAddress = selected.address;
+        networkPort = selected.port;
+        chooseRoomAndConnect(scanner);
+        return;
+    }
+}
 
-        \u001B[1;32mUsername:\u001B[0m
-          --name <name>                         Set your display name (saved to scores.ini)
-                                                Shown as "Alice (X) vs Bob (O)" in network games
+void chooseRoomAndConnect(Scanner scanner) throws Exception {
+    IO.print("Room [1]: ");
+    String r = scanner.nextLine().trim();
+    requestedRoom = r.isEmpty() ? "1" : r;
+    isServer = false;
+    networkMode = true;
+    runNetworkGame();
+}
 
-        \u001B[1;32mTurn timer:\u001B[0m
-          --timer <seconds>                     Each player must move within N seconds
-                                                (0 = disabled, saved to scores.ini)
-                                                On timeout the turn is forfeited to the opponent
+List<ServerEntry> buildJoinServerList() {
+    List<ServerEntry> result = new ArrayList<>();
+    Set<String> seen = new HashSet<>();
 
-        \u001B[1;32mStarting player:\u001B[0m
-          --startplayer X|O                     Choose who goes first (default X)
+    // Named remote servers come from servers.ini.
+    for (ServerEntry configured : configuredServers) {
+        result.add(configured);
+        seen.add(configured.address + ":" + configured.port);
+    }
 
-        \u001B[1;32mColors:\u001B[0m
-          --color-x  <COLOR>                    Set X player color
-          --color-o  <COLOR>                    Set O player color
-          --color-grid <COLOR>                  Set grid/line color
-          Colors: RED GREEN YELLOW BLUE PURPLE CYAN WHITE
-                  BOLD_RED BOLD_GREEN BOLD_YELLOW BOLD_BLUE BOLD_CYAN
+    // LAN servers are discovered automatically and get friendly Local Server names.
+    List<DiscoveredServer> discovered = discoverServers();
+    int localNumber = 1;
+    for (DiscoveredServer d : discovered) {
+        String key = d.address + ":" + d.port;
+        if (!seen.add(key)) continue;
+        result.add(new ServerEntry("Local Server " + localNumber++, d.address, d.port, d.rooms, false, true));
+    }
 
-        \u001B[1;32mBoard size:\u001B[0m
-          --size <N>                            NxN board (min 3, server controls in network mode)
+    // Keep the requested directory-style slots visible even before they are configured.
+    String[] directoryNames = {"AtomicWFC Online", "Local Server 1", "Local Server 2", "Online Server 1", "Online Server 2"};
+    for (String name : directoryNames) {
+        boolean exists = result.stream().anyMatch(s -> s.name.equalsIgnoreCase(name));
+        if (!exists) result.add(new ServerEntry(name, "", 0, 0, false, false));
+    }
 
-        \u001B[1;32mNetwork play:\u001B[0m
-          java Main --server                    Host a game
-          java Main --server --port 12345       Host on a specific port
-          java Main --client 192.168.1.5        Join a game at that IP
-          java Main --client 192.168.1.5 --port 12345
-          The server is X; use --startplayer O to let the client go first.
-          Timer and board size are synced automatically from server to client.
+    // Put the main AtomicWFC entry first, followed by the rest of the directory.
+    result.sort((a, b) -> {
+        if (a.name.equalsIgnoreCase("AtomicWFC Online")) return -1;
+        if (b.name.equalsIgnoreCase("AtomicWFC Online")) return 1;
+        return 0;
+    });
+    return result;
+}
 
-        \u001B[1;32mScores:\u001B[0m
-          --scores                              Print scores and exit
-          --reset-scores                        Reset all scores and streaks to 0
-          All preferences are saved in scores.ini automatically.
+static class ServerEntry {
+    final String name;
+    final String address;
+    final int port;
+    final int rooms;
+    final boolean configured;
+    final boolean discovered;
 
-        \u001B[1;32mDifficulty (bot only):\u001B[0m
-          --easy    Random moves
-          --normal  Blocks wins and takes winning moves
-          --hard    Unbeatable minimax (3x3 only)
-        """;
-            System.out.println(help);
-            try {
-                String content = Files.readString(Paths.get("README.md"));
-                for (String line : content.split("\n")) {
-                    if (line.startsWith("#"))
-                        System.out.println(CYAN + BOLD + line + RESET);
-                    else if (line.contains("**"))
-                        System.out.println(line.replaceAll("\\*\\*(.*?)\\*\\*", BOLD + GREEN + "$1" + RESET));
-                    else
-                        System.out.println(line);
+    ServerEntry(String name, String address, int port, int rooms, boolean configured, boolean discovered) {
+        this.name = name;
+        this.address = address;
+        this.port = port;
+        this.rooms = rooms;
+        this.configured = configured;
+        this.discovered = discovered;
+    }
+}
+
+void loadConfiguredServers() {
+    configuredServers.clear();
+    Path path = Paths.get(SERVERS_FILE);
+    if (!Files.exists(path)) return;
+    try {
+        for (String line : Files.readAllLines(path)) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            String[] p = line.split("\\|", -1);
+            if (p.length < 3) continue;
+            String name = p[0].trim();
+            String address = p[1].trim();
+            int port = Integer.parseInt(p[2].trim());
+            int rooms = p.length >= 4 ? Integer.parseInt(p[3].trim()) : 0;
+            if (!name.isEmpty() && !address.isEmpty() && port >= 1 && port <= 65535) {
+                configuredServers.add(new ServerEntry(name, address, port, Math.max(0, rooms), true, false));
+            }
+        }
+    } catch (Exception ignored) { }
+}
+
+
+void runLocalGame() throws Exception { runLocalGame(new Scanner(System.in), false); }
+
+void runLocalGame(Scanner scanner, boolean resumed) throws Exception {
+    LocalState state;
+    if (resumed) {
+        state = loadGame();
+        if (state == null) { IO.println("No saved game."); return; }
+    } else {
+        state = new LocalState(newBoard(), startPlayer, botplay, gameMode, difficulty);
+    }
+
+    boolean gameOver = false;
+    while (!gameOver) {
+        clearConsole();
+        displayBoard(state.board);
+        String humanMark = "X";
+        String botMark = "O";
+        String playerName = state.currentPlayer;
+        IO.println("\n " + gameModeName(state.mode) + " | " + (state.bot ? "AI" : "2 players")
+                + " | Turn: " + playerName
+                + (turnTimerSeconds > 0 ? " [" + turnTimerSeconds + "s]" : ""));
+        if (state.bot) IO.println(" Credits: " + YELLOW + credits + RESET + " | Powerups: undo=" + powerupCount(POWER_UNDO)
+                + " freeze=" + powerupCount(POWER_FREEZE) + " extra=" + powerupCount(POWER_EXTRA) + " shield=" + powerupCount(POWER_SHIELD));
+        IO.println(" Commands: " + CYAN + "pause" + RESET + ", " + CYAN + "save" + RESET + ", " + CYAN + "power" + RESET + ", " + CYAN + "shop" + RESET + ", " + CYAN + "quit" + RESET);
+
+        int[] move;
+        if (state.bot && state.currentPlayer.equals(botMark)) {
+            if (state.freezeBotNext) {
+                state.freezeBotNext = false;
+                IO.println(YELLOW + " Freeze activated — the AI loses this turn!" + RESET);
+                state.currentPlayer = other(state.currentPlayer);
+                continue;
+            }
+            move = botMove(state.board, state.difficulty, botMark, humanMark);
+            if (move == null) { gameOver = true; continue; }
+        } else {
+            InputResult input = readMoveWithTimer(scanner, turnTimerSeconds);
+            if (input.command != null) {
+                switch (input.command) {
+                    case "pause", "save" -> {
+                        if (!state.bot) {
+                            IO.println(YELLOW + " Save/resume is available for single-player (AI) games only." + RESET);
+                            continue;
+                        }
+                        saveGame(state);
+                        clearConsole();
+                        IO.println(GREEN + " Game saved. You can resume it from the main menu." + RESET);
+                        if (input.command.equals("pause")) {
+                            pauseMessage(scanner, "Game paused. Press Enter to return to the menu...");
+                            return;
+                        }
+                        continue;
+                    }
+                    case "quit", "exit" -> {
+                        if (confirm(scanner, "Quit this game without saving? (y/n): ")) return;
+                        continue;
+                    }
+                    case "shop" -> { shopMenu(scanner); continue; }
+                    case "power" -> { usePowerupMenu(scanner, state); continue; }
+                    default -> { }
                 }
-            } catch (IOException ignored) {}
+            }
+            if (input.move == null) {
+                state.currentPlayer = other(state.currentPlayer);
+                continue;
+            }
+            move = input.move;
         }
+
+        String[][] beforeMove = copyBoard(state.board);
+        if (!makeMove(state.board, move[0], move[1], state.currentPlayer)) {
+            IO.println(RED + " Invalid move. Try again." + RESET);
+            continue;
+        }
+        movesPlayed++;
+        state.previousBoard = beforeMove;
+
+        if (state.bot && state.currentPlayer.equals(botMark) && state.shieldActive && checkWin(state.board, botMark, state.mode)) {
+            state.board = beforeMove;
+            state.shieldActive = false;
+            IO.println(GREEN + " Shield blocked the AI's winning move!" + RESET);
+            state.currentPlayer = humanMark;
+            continue;
+        }
+
+        if (checkWin(state.board, state.currentPlayer, state.mode)) {
+            clearConsole(); displayBoard(state.board);
+            if (state.mode.equals(MODE_MISERE)) {
+                IO.println(YELLOW + BOLD + "\n " + state.currentPlayer + " completed a line and loses!" + RESET);
+                recordWin(other(state.currentPlayer));
+            } else {
+                IO.println(GREEN + BOLD + "\n " + state.currentPlayer + " wins!" + RESET);
+                recordWin(state.currentPlayer);
+            }
+            gamesPlayed++;
+            awardCredits(state.bot ? (state.currentPlayer.equals(humanMark) ? 50 : 10) : 25);
+            updateAchievements(state);
+            printScores(); printAchievements();
+            deleteSave();
+            gameOver = true;
+        } else if (isBoardFull(state.board)) {
+            clearConsole(); displayBoard(state.board);
+            IO.println(CYAN + "\n It's a draw!" + RESET);
+            recordDraw(); gamesPlayed++;
+            awardCredits(state.bot ? 20 : 15);
+            updateAchievements(state);
+            printScores(); printAchievements();
+            deleteSave();
+            gameOver = true;
+        } else {
+            if (state.extraTurn && state.currentPlayer.equals(humanMark)) {
+                state.extraTurn = false;
+                IO.println(GREEN + " Extra Turn activated!" + RESET);
+            } else {
+                state.currentPlayer = other(state.currentPlayer);
+            }
+        }
+    }
+    saveScores();
+    pauseMessage(scanner, "Press Enter to continue...");
+}
+
+void usePowerupMenu(Scanner scanner, LocalState state) {
+    if (!state.bot || !state.currentPlayer.equals("X")) { pauseMessage(scanner, "Powerups are available only on your AI turn."); return; }
+    clearConsole();
+    IO.println(CYAN + BOLD + "\n── Use Powerup ────────────────────────" + RESET);
+    IO.println("  1. Undo Move  (" + powerupCount(POWER_UNDO) + ")");
+    IO.println("  2. Freeze AI  (" + powerupCount(POWER_FREEZE) + ")");
+    IO.println("  3. Extra Turn (" + powerupCount(POWER_EXTRA) + ")");
+    IO.println("  4. Shield     (" + powerupCount(POWER_SHIELD) + ")");
+    IO.println("  0. Cancel");
+    IO.print("\n Select: ");
+    String c = scanner.nextLine().trim();
+    String type = switch (c) { case "1" -> POWER_UNDO; case "2" -> POWER_FREEZE; case "3" -> POWER_EXTRA; case "4" -> POWER_SHIELD; default -> null; };
+    if (type == null) return;
+    if (!consumePowerup(type)) { pauseMessage(scanner, "You don't own that powerup."); return; }
+    switch (type) {
+        case POWER_UNDO -> {
+            if (state.previousBoard == null) { powerups.merge(type,1,Integer::sum); pauseMessage(scanner,"There is no move to undo yet."); return; }
+            state.board = copyBoard(state.previousBoard); state.previousBoard = null; state.currentPlayer = "X";
+            pauseMessage(scanner, "Your previous move was undone.");
+        }
+        case POWER_FREEZE -> { state.freezeBotNext = true; pauseMessage(scanner, "The AI will skip its next turn."); }
+        case POWER_EXTRA -> { state.extraTurn = true; pauseMessage(scanner, "Your next move will grant another turn."); }
+        case POWER_SHIELD -> { state.shieldActive = true; pauseMessage(scanner, "Shield active. It will block the next AI winning move."); }
+    }
+    saveScores();
+}
+
+static String[][] copyBoard(String[][] board) { String[][] copy = new String[board.length][board.length]; for (int r=0;r<board.length;r++) copy[r]=Arrays.copyOf(board[r],board[r].length); return copy; }
+static void awardCredits(int amount) { credits += Math.max(0, amount); saveScores(); }
+
+boolean resumeGame(Scanner scanner) throws Exception {
+    LocalState state = loadGame();
+    if (state == null) return false;
+    botplay = state.bot;
+    gameMode = state.mode;
+    difficulty = state.difficulty;
+    runLocalGame(scanner, true);
+    return true;
+}
+
+void runNetworkGame() throws Exception {
+    if (isServer) {
+        runServer();
+        return;
+    }
+    try (Socket socket = new Socket(serverAddress, networkPort);
+         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+         BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+         Scanner scanner = new Scanner(System.in)) {
+        out.println("HELLO=" + username);
+        out.println("ROOM=" + requestedRoom);
+        String first = netIn.readLine();
+        if (first == null) throw new IOException("Server closed the connection.");
+        if (first.startsWith("ERROR=")) { IO.println(RED + first.substring(6) + RESET); return; }
+        if (!first.startsWith("ROOM=")) throw new IOException("Invalid server response.");
+        String room = first.substring(5);
+        String roleLine = netIn.readLine();
+        if (roleLine != null && roleLine.equals("WAITING")) {
+            String waitingMessage = netIn.readLine();
+            if (waitingMessage != null) IO.println(YELLOW + waitingMessage + RESET);
+            roleLine = netIn.readLine();
+        }
+        if (roleLine == null || !roleLine.startsWith("ROLE=")) throw new IOException("Invalid room setup response.");
+        String role = roleLine.substring(5);
+        int syncedSize = Integer.parseInt(netIn.readLine().substring(5));
+        String syncedStart = netIn.readLine().substring(6);
+        int syncedTimer = Integer.parseInt(netIn.readLine().substring(6));
+        String opponentName = netIn.readLine().substring(5);
+        size = syncedSize; startPlayer = syncedStart; turnTimerSeconds = syncedTimer;
+        playNetworkSession(socket, out, netIn, scanner, role, room, opponentName);
+    }
+}
+
+static class Room {
+    final Socket socket;
+    final PrintWriter out;
+    final String name;
+    final CountDownLatch paired = new CountDownLatch(1);
+    Room(Socket socket, PrintWriter out, String name) { this.socket = socket; this.out = out; this.name = name; }
+}
+
+static final Map<String, Room> ROOMS = new HashMap<>();
+
+static class DiscoveredServer {
+    final String name;
+    final String address;
+    final int port;
+    final int rooms;
+    DiscoveredServer(String name, String address, int port, int rooms) {
+        this.name = name; this.address = address; this.port = port; this.rooms = rooms;
+    }
+}
+
+List<DiscoveredServer> discoverServers() {
+    Map<String, DiscoveredServer> found = new LinkedHashMap<>();
+    try (DatagramSocket socket = new DatagramSocket()) {
+        socket.setBroadcast(true);
+        byte[] data = "TTT_DISCOVER".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+            if (!ni.isUp() || ni.isLoopback()) continue;
+            for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                InetAddress broadcast = ia.getBroadcast();
+                if (broadcast != null) socket.send(new DatagramPacket(data, data.length, broadcast, DISCOVERY_PORT));
+            }
+        }
+        // Also probe localhost so the feature works when firewall/broadcast rules block LAN broadcast.
+        try { socket.send(new DatagramPacket(data, data.length, InetAddress.getByName("127.0.0.1"), DISCOVERY_PORT)); } catch (Exception ignored) {}
+        socket.setSoTimeout(250);
+        long deadline = System.currentTimeMillis() + discoveryTimeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                byte[] buf = new byte[512];
+                DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                socket.receive(packet);
+                String response = new String(packet.getData(), 0, packet.getLength(), java.nio.charset.StandardCharsets.UTF_8);
+                String[] p = response.split("\\|");
+                if (p.length >= 4 && p[0].equals("TTT_SERVER")) {
+                    int port = Integer.parseInt(p[2]);
+                    int rooms = Integer.parseInt(p[3]);
+                    String address = packet.getAddress().getHostAddress();
+                    String name = p.length >= 2 && !p[1].isBlank() ? p[1] : "Local Server";
+                    found.put(address + ":" + port, new DiscoveredServer(name, address, port, rooms));
+                }
+            } catch (SocketTimeoutException ignored) {}
+            catch (Exception ignored) {}
+        }
+    } catch (Exception e) {
+        System.err.println("Network discovery failed: " + e.getMessage());
+    }
+    return new ArrayList<>(found.values());
+}
+
+void startDiscoveryResponder() {
+    Thread t = new Thread(() -> {
+        try (DatagramSocket socket = new DatagramSocket(DISCOVERY_PORT)) {
+            socket.setBroadcast(true);
+            byte[] buf = new byte[256];
+            while (!Thread.currentThread().isInterrupted()) {
+                DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                socket.receive(packet);
+                String request = new String(packet.getData(), 0, packet.getLength(), java.nio.charset.StandardCharsets.UTF_8).trim();
+                if (!request.equals("TTT_DISCOVER")) continue;
+                String response = "TTT_SERVER|" + InetAddress.getLocalHost().getHostName() + "|" + networkPort + "|" + serverRooms;
+                byte[] data = response.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                socket.send(new DatagramPacket(data, data.length, packet.getAddress(), packet.getPort()));
+            }
+        } catch (Exception ignored) { }
+    }, "ttt-discovery");
+    t.setDaemon(true);
+    t.start();
+}
+
+void runServer() throws Exception {
+    startDiscoveryResponder();
+    IO.println(CYAN + BOLD + "Hosting " + serverRooms + " rooms on port " + networkPort + RESET);
+    IO.println("Two clients can join each room; the server computer does not need to play.");
+    IO.println("Clients join with: java Main --client <address> --room <room>");
+    ExecutorService pool = Executors.newCachedThreadPool();
+    try (ServerSocket server = new ServerSocket(networkPort)) {
+        while (true) {
+            Socket socket = server.accept();
+            pool.submit(() -> {
+                try { handleRoomConnection(socket); }
+                catch (Exception e) { System.err.println("Room connection ended: " + e.getMessage()); }
+            });
+        }
+    } finally { pool.shutdownNow(); }
+}
+
+void handleRoomConnection(Socket socket) throws Exception {
+    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+    String hello = in.readLine();
+    String requested = in.readLine();
+    if (hello == null || !hello.startsWith("HELLO=") || requested == null || !requested.startsWith("ROOM=")) {
+        out.println("ERROR=Invalid room handshake.");
+        return;
+    }
+    String name = hello.substring(6).trim();
+    String roomId = requested.substring(5).trim();
+    int roomNumber;
+    try { roomNumber = Integer.parseInt(roomId); } catch (Exception e) { roomNumber = -1; }
+    if (roomNumber < 1 || roomNumber > serverRooms) {
+        out.println("ERROR=Invalid room. Available rooms: 1-" + serverRooms);
+        return;
+    }
+
+    Room first;
+    Room waiting = null;
+    synchronized (ROOMS) {
+        first = ROOMS.remove(roomId);
+        if (first == null) {
+            waiting = new Room(socket, out, name);
+            ROOMS.put(roomId, waiting);
+        }
+    }
+    if (waiting != null) {
+        out.println("ROOM=" + roomId);
+        out.println("WAITING");
+        out.println("Waiting for another player to join room " + roomId + "...");
+        try { waiting.paired.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        return;
+    }
+
+    // Second player joined: pair the two clients and start a relay session.
+    out.println("ROOM=" + roomId);
+    first.paired.countDown();
+    out.println("ROLE=O");
+    first.out.println("ROLE=X");
+    out.println("SIZE=" + size);
+    first.out.println("SIZE=" + size);
+    out.println("START=" + startPlayer);
+    first.out.println("START=" + startPlayer);
+    out.println("TIMER=" + turnTimerSeconds);
+    first.out.println("TIMER=" + turnTimerSeconds);
+    out.println("NAME=" + first.name);
+    first.out.println("NAME=" + name);
+
+    // Relay commands between the two clients. The clients own game state and UI.
+    ExecutorService relay = Executors.newFixedThreadPool(2);
+    relay.submit(() -> relayPlayer(first.socket, out, socket));
+    relay.submit(() -> relayPlayer(socket, first.out, first.socket));
+    relay.shutdown();
+}
+
+void relayPlayer(Socket from, PrintWriter to, Socket other) {
+    try {
+        BufferedReader in = new BufferedReader(new InputStreamReader(from.getInputStream()));
+        String line;
+        while ((line = in.readLine()) != null) {
+            to.println(line);
+            if (line.equals("QUIT")) break;
+        }
+    } catch (IOException ignored) {
+    } finally {
+        try { other.close(); } catch (IOException ignored) { }
+    }
+}
+
+void playNetworkSession(Socket socket, PrintWriter out, BufferedReader netIn, Scanner scanner,
+                        String myMark, String room, String opponentName) throws Exception {
+    final String theirMark = other(myMark);
+    String mySymbol = colorOf(myMark) + myMark + RESET;
+    String theirSymbol = colorOf(theirMark) + theirMark + RESET;
+    String matchHeader = " Room " + room + " | " + BOLD + username + RESET + " (" + mySymbol + ") vs "
+            + BOLD + opponentName + RESET + " (" + theirSymbol + ")";
+    String[][] board = newBoard();
+    boolean myTurn = myMark.equals(startPlayer);
+    IO.println(matchHeader);
+
+    while (true) {
+        clearConsole(); IO.println(matchHeader); displayBoard(board);
+        if (myTurn) {
+            IO.println("\n Your turn (" + mySymbol + ") — type 'quit' to leave.");
+            InputResult input = readMoveWithTimer(scanner, turnTimerSeconds);
+            if (input.command != null && input.command.equals("quit")) { out.println("QUIT"); return; }
+            if (input.move == null) { out.println("TIMEOUT"); myTurn = false; continue; }
+            if (!makeMove(board, input.move[0], input.move[1], myMark)) { IO.println("Invalid move."); continue; }
+            out.println(input.move[0] + "," + input.move[1]);
+        } else {
+            IO.println("\n Waiting for " + opponentName + "...");
+            String line = netIn.readLine();
+            if (line == null || line.equals("QUIT")) { IO.println(YELLOW + "Opponent left the room." + RESET); return; }
+            if (line.equals("TIMEOUT")) { myTurn = true; continue; }
+            String[] p = line.split(",");
+            if (p.length != 2) continue;
+            int r = Integer.parseInt(p[0].trim()), c = Integer.parseInt(p[1].trim());
+            if (!makeMove(board, r, c, theirMark)) { IO.println(RED + "Invalid move received." + RESET); return; }
+        }
+
+        String lastMover = myTurn ? myMark : theirMark;
+        if (checkWin(board, lastMover, gameMode)) {
+            clearConsole(); IO.println(matchHeader); displayBoard(board);
+            String winner = lastMover;
+            if (gameMode.equals(MODE_MISERE)) winner = other(lastMover);
+            IO.println(winner.equals(myMark) ? GREEN + BOLD + "\n You win!" + RESET : YELLOW + "\n You lose!" + RESET);
+            recordWin(winner); gamesPlayed++; achievements.add("network"); updateAchievements(null); saveScores(); return;
+        }
+        if (isBoardFull(board)) {
+            clearConsole(); IO.println(matchHeader); displayBoard(board); IO.println(CYAN + "\n Draw!" + RESET);
+            recordDraw(); gamesPlayed++; achievements.add("network"); updateAchievements(null); saveScores(); return;
+        }
+        myTurn = !myTurn;
+    }
+}
+
+static class LocalState {
+    String[][] board;
+    String currentPlayer, mode, difficulty;
+    boolean bot;
+    String[][] previousBoard;
+    boolean freezeBotNext, extraTurn, shieldActive;
+    LocalState(String[][] board, String currentPlayer, boolean bot, String mode, String difficulty) {
+        this.board = board; this.currentPlayer = currentPlayer; this.bot = bot; this.mode = mode; this.difficulty = difficulty;
+    }
+}
+
+static class InputResult {
+    int[] move; String command;
+    InputResult(int[] move, String command) { this.move = move; this.command = command; }
+}
+
+InputResult readMoveWithTimer(Scanner scanner, int seconds) throws Exception {
+    if (seconds <= 0) return parseInput(scanner.nextLine());
+    ExecutorService exec = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r); t.setDaemon(true); return t; });
+    Future<String> future = exec.submit(scanner::nextLine);
+    try {
+        String line = future.get(seconds, TimeUnit.SECONDS);
+        return parseInput(line);
+    } catch (TimeoutException e) {
+        future.cancel(true);
+        timeouts++;
+        return new InputResult(null, null);
+    } finally { exec.shutdownNow(); }
+}
+
+InputResult parseInput(String line) {
+    if (line == null) return new InputResult(null, "quit");
+    String s = line.trim();
+    switch (s.toLowerCase()) {
+        case "pause", "p" -> { return new InputResult(null, "pause"); }
+        case "save", "s" -> { return new InputResult(null, "save"); }
+        case "quit", "q", "exit" -> { return new InputResult(null, "quit"); }
+        default -> { }
+    }
+    String[] parts = s.replace(',', ' ').split("\\s+");
+    if (parts.length != 2) return new InputResult(null, "invalid");
+    try { return new InputResult(new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1])}, null); }
+    catch (NumberFormatException e) { return new InputResult(null, "invalid"); }
+}
+
+String[][] newBoard() {
+    String[][] b = new String[size][size];
+    for (String[] row : b) Arrays.fill(row, " ");
+    return b;
+}
+
+void displayBoard(String[][] board) {
+    int n = board.length;
+    int w = Math.max(1, String.valueOf(n - 1).length());
+    IO.print(" ".repeat(w + 1));
+    for (int c = 0; c < n; c++) { IO.print(String.format("%" + w + "d", c)); if (c < n - 1) IO.print(COLOR_GRID + "   " + RESET); }
+    IO.println("");
+    for (int r = 0; r < n; r++) {
+        IO.print(String.format("%" + w + "d ", r));
+        for (int c = 0; c < n; c++) { IO.print(" ".repeat(Math.max(0, w - 1)) + board[r][c]); if (c < n - 1) IO.print(COLOR_GRID + " | " + RESET); }
+        IO.println("");
+        if (r < n - 1) IO.println(COLOR_GRID + " ".repeat(w) + "-".repeat(n * (w + 3) - 2) + RESET);
+    }
+}
+
+boolean makeMove(String[][] board, int row, int col, String player) {
+    if (row >= 0 && row < board.length && col >= 0 && col < board.length && board[row][col].equals(" ")) {
+        board[row][col] = player; return true;
+    }
+    return false;
+}
+
+boolean checkWin(String[][] board, String player) { return checkWin(board, player, MODE_CLASSIC); }
+
+boolean checkWin(String[][] board, String player, String mode) {
+    if (mode.equals(MODE_CONNECT)) return checkConnect(board, player, 3);
+    int n = board.length;
+    for (int i = 0; i < n; i++) {
+        boolean row = true, col = true;
+        for (int j = 0; j < n; j++) { if (!board[i][j].equals(player)) row = false; if (!board[j][i].equals(player)) col = false; }
+        if (row || col) return true;
+    }
+    boolean d1 = true, d2 = true;
+    for (int i = 0; i < n; i++) { if (!board[i][i].equals(player)) d1 = false; if (!board[i][n - 1 - i].equals(player)) d2 = false; }
+    return d1 || d2;
+}
+
+boolean checkConnect(String[][] board, String player, int target) {
+    int n = board.length;
+    int[][] dirs = {{1,0},{0,1},{1,1},{1,-1}};
+    for (int r = 0; r < n; r++) for (int c = 0; c < n; c++) if (board[r][c].equals(player)) {
+        for (int[] d : dirs) {
+            int count = 0, rr = r, cc = c;
+            while (rr >= 0 && rr < n && cc >= 0 && cc < n && board[rr][cc].equals(player)) { count++; if (count >= target) return true; rr += d[0]; cc += d[1]; }
+        }
+    }
+    return false;
+}
+
+boolean isBoardFull(String[][] board) { for (String[] row : board) for (String cell : row) if (cell.equals(" ")) return false; return true; }
+
+int[] botMove(String[][] board, String difficulty, String bot, String human) {
+    if (difficulty.equals("hard") && board.length == 3 && gameMode.equals(MODE_CLASSIC)) return bestMove(board, bot, human);
+    if (!difficulty.equals("easy")) {
+        int[] m = findWinningMove(board, bot); if (m != null) return m;
+        m = findWinningMove(board, human); if (m != null) return m;
+    }
+    if (difficulty.equals("hard")) {
+        int[] center = findCenter(board); if (center != null) return center;
+    }
+    return randomMove(board);
+}
+
+int[] findCenter(String[][] board) { int c = board.length / 2; return board[c][c].equals(" ") ? new int[]{c,c} : null; }
+
+int[] randomMove(String[][] board) {
+    List<int[]> empty = new ArrayList<>();
+    for (int r = 0; r < board.length; r++) for (int c = 0; c < board.length; c++) if (board[r][c].equals(" ")) empty.add(new int[]{r,c});
+    return empty.isEmpty() ? null : empty.get(ThreadLocalRandom.current().nextInt(empty.size()));
+}
+
+int[] findWinningMove(String[][] board, String player) {
+    for (int r = 0; r < board.length; r++) for (int c = 0; c < board.length; c++) if (board[r][c].equals(" ")) {
+        board[r][c] = player; boolean wins = checkWin(board, player, gameMode); board[r][c] = " "; if (wins) return new int[]{r,c};
+    }
+    return null;
+}
+
+int[] bestMove(String[][] board, String bot, String human) {
+    int bestScore = Integer.MIN_VALUE; int[] best = null;
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) if (board[r][c].equals(" ")) {
+        board[r][c] = bot; int score = minimax(board, false, bot, human); board[r][c] = " "; if (score > bestScore) { bestScore = score; best = new int[]{r,c}; }
+    }
+    return best;
+}
+
+int minimax(String[][] board, boolean botTurn, String bot, String human) {
+    if (checkWin(board, bot, MODE_CLASSIC)) return 1;
+    if (checkWin(board, human, MODE_CLASSIC)) return -1;
+    if (isBoardFull(board)) return 0;
+    int best = botTurn ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) if (board[r][c].equals(" ")) {
+        board[r][c] = botTurn ? bot : human; int score = minimax(board, !botTurn, bot, human); board[r][c] = " "; best = botTurn ? Math.max(best, score) : Math.min(best, score);
+    }
+    return best;
+}
+
+void recordWin(String mark) {
+    if (mark.equals("X")) { winsX++; streakX++; streakO = 0; bestStreakX = Math.max(bestStreakX, streakX); }
+    else { winsO++; streakO++; streakX = 0; bestStreakO = Math.max(bestStreakO, streakO); }
+}
+
+void recordDraw() { draws++; streakX = 0; streakO = 0; }
+
+static void printScores() {
+    IO.println(BOLD + "\n ── Scores ─────────────────────────────" + RESET);
+    IO.println(colorOf("X") + String.format("  X wins: %-4d streak: %d (best: %d)", winsX, streakX, bestStreakX) + RESET);
+    IO.println(colorOf("O") + String.format("  O wins: %-4d streak: %d (best: %d)", winsO, streakO, bestStreakO) + RESET);
+    IO.println(CYAN + String.format("  Draws: %-4d games: %-4d moves: %-4d timeouts: %d", draws, gamesPlayed, movesPlayed, timeouts) + RESET);
+    IO.println(BOLD + " ───────────────────────────────────────" + RESET);
+}
+
+static void printAchievements() {
+    String[][] list = {
+            {"first_win", "First Win", "Win your first game"},
+            {"win_3", "Hat Trick", "Reach a 3-game win streak"},
+            {"win_5", "On Fire", "Reach a 5-game win streak"},
+            {"win_10", "Unstoppable", "Reach a 10-game win streak"},
+            {"games_25", "Veteran", "Play 25 games"},
+            {"games_100", "Centurion", "Play 100 games"},
+            {"moves_100", "Board Regular", "Make 100 moves"},
+            {"moves_1000", "Board Master", "Make 1,000 moves"},
+            {"giant", "Giant Board", "Play on a board of at least 10x10"},
+            {"large", "Big Board", "Play on a board of at least 5x5"},
+            {"hard_ai", "AI Slayer", "Beat the hard AI"},
+            {"misere", "Reverse Psychology", "Win a Misère game"},
+            {"connect", "Connected", "Win a Connect game"},
+            {"all_modes", "Game Explorer", "Complete all three game modes"},
+            {"network", "Online", "Finish a network game"},
+            {"speed", "Speed Demon", "Win a timed game"},
+            {"timeouts", "Timekeeper", "Reach 5 turn timeouts"},
+            {"saver", "Prepared", "Save a game for later"},
+            {"size_15", "Titan", "Play on a 15x15 board"}
+    };
+    IO.println(PURPLE + BOLD + "\n ── Achievements ───────────────────────" + RESET);
+    for (String[] a : list) IO.println((achievements.contains(a[0]) ? GREEN + " [✓] " : " [ ] ") + a[1] + " — " + a[2] + RESET);
+}
+
+void updateAchievements(LocalState state) {
+    if (winsX + winsO >= 1) achievements.add("first_win");
+    int best = Math.max(bestStreakX, bestStreakO);
+    if (best >= 3) achievements.add("win_3");
+    if (best >= 5) achievements.add("win_5");
+    if (best >= 10) achievements.add("win_10");
+    if (gamesPlayed >= 25) achievements.add("games_25");
+    if (gamesPlayed >= 100) achievements.add("games_100");
+    if (movesPlayed >= 100) achievements.add("moves_100");
+    if (movesPlayed >= 1000) achievements.add("moves_1000");
+    if (size >= 5) achievements.add("large");
+    if (size >= 10) achievements.add("giant");
+    if (size >= 15) achievements.add("size_15");
+    if (timeouts >= 5) achievements.add("timeouts");
+    if (state != null) {
+        if (state.difficulty.equals("hard") && state.bot) achievements.add("hard_ai");
+        if (state.mode.equals(MODE_MISERE)) achievements.add("misere");
+        if (state.mode.equals(MODE_CONNECT)) achievements.add("connect");
+        achievements.add("mode_" + state.mode);
+        if (achievements.contains("mode_" + MODE_CLASSIC) && achievements.contains("mode_" + MODE_MISERE) && achievements.contains("mode_" + MODE_CONNECT)) achievements.add("all_modes");
+    }
+    if (turnTimerSeconds > 0) achievements.add("speed");
+    saveScores();
+}
+
+void saveGame(LocalState state) {
+    achievements.add("saver");
+    Properties p = new Properties();
+    p.setProperty("size", String.valueOf(state.board.length)); p.setProperty("current", state.currentPlayer);
+    p.setProperty("bot", String.valueOf(state.bot)); p.setProperty("mode", state.mode); p.setProperty("difficulty", state.difficulty);
+    for (int r = 0; r < state.board.length; r++) for (int c = 0; c < state.board.length; c++) p.setProperty("cell." + r + "." + c, state.board[r][c]);
+    try (OutputStream out = Files.newOutputStream(Paths.get(SAVE_FILE))) { p.store(out, "TicTacToe saved game"); }
+    catch (IOException e) { System.err.println("Could not save game: " + e.getMessage()); }
+}
+
+LocalState loadGame() {
+    if (!Files.exists(Paths.get(SAVE_FILE))) return null;
+    Properties p = new Properties();
+    try (InputStream in = Files.newInputStream(Paths.get(SAVE_FILE))) {
+        p.load(in); int n = clamp(Integer.parseInt(p.getProperty("size", "3")), 3, 20); String[][] b = new String[n][n];
+        for (int r = 0; r < n; r++) for (int c = 0; c < n; c++) b[r][c] = p.getProperty("cell." + r + "." + c, " ");
+        return new LocalState(b, p.getProperty("current", "X"), Boolean.parseBoolean(p.getProperty("bot", "false")), p.getProperty("mode", MODE_CLASSIC), p.getProperty("difficulty", "normal"));
+    } catch (Exception e) { System.err.println("Could not load saved game: " + e.getMessage()); return null; }
+}
+
+void deleteSave() { try { Files.deleteIfExists(Paths.get(SAVE_FILE)); } catch (IOException ignored) {} }
+
+static void loadScores() {
+    Properties p = new Properties();
+    try (InputStream in = Files.newInputStream(Paths.get(SCORES_FILE))) {
+        p.load(in); winsX = getInt(p,"wins.X",0); winsO = getInt(p,"wins.O",0); draws = getInt(p,"draws",0);
+        credits = getInt(p,"credits",100);
+        powerups.clear();
+        for (String type : List.of(POWER_UNDO, POWER_FREEZE, POWER_EXTRA, POWER_SHIELD)) { int count = getInt(p,"powerup." + type,0); if (count > 0) powerups.put(type,count); }
+        streakX = getInt(p,"streak.X",0); streakO = getInt(p,"streak.O",0); bestStreakX = getInt(p,"bestStreak.X",0); bestStreakO = getInt(p,"bestStreak.O",0);
+        gamesPlayed = getInt(p,"gamesPlayed",0); movesPlayed = getInt(p,"movesPlayed",0); timeouts = getInt(p,"timeouts",0);
+        COLOR_X = COLOR_MAP.getOrDefault(p.getProperty("color.X","RED"), COLOR_X); COLOR_O = COLOR_MAP.getOrDefault(p.getProperty("color.O","BLUE"), COLOR_O); COLOR_GRID = COLOR_MAP.getOrDefault(p.getProperty("color.grid","WHITE"), COLOR_GRID);
+        startPlayer = p.getProperty("startPlayer","X"); username = p.getProperty("username","Player"); turnTimerSeconds = getInt(p,"turnTimer",0); gameMode = p.getProperty("gameMode",MODE_CLASSIC); difficulty = p.getProperty("difficulty","normal");
+        String savedAchievements = p.getProperty("achievements",""); if (!savedAchievements.isBlank()) achievements.addAll(Arrays.asList(savedAchievements.split(",")));
+    } catch (IOException ignored) { }
+}
+
+static void saveScores() {
+    Properties p = new Properties();
+    p.setProperty("credits",String.valueOf(credits));
+    for (String type : List.of(POWER_UNDO, POWER_FREEZE, POWER_EXTRA, POWER_SHIELD)) p.setProperty("powerup." + type, String.valueOf(powerupCount(type)));
+    p.setProperty("wins.X",String.valueOf(winsX)); p.setProperty("wins.O",String.valueOf(winsO)); p.setProperty("draws",String.valueOf(draws));
+    p.setProperty("streak.X",String.valueOf(streakX)); p.setProperty("streak.O",String.valueOf(streakO)); p.setProperty("bestStreak.X",String.valueOf(bestStreakX)); p.setProperty("bestStreak.O",String.valueOf(bestStreakO));
+    p.setProperty("gamesPlayed",String.valueOf(gamesPlayed)); p.setProperty("movesPlayed",String.valueOf(movesPlayed)); p.setProperty("timeouts",String.valueOf(timeouts));
+    p.setProperty("color.X",colorName(COLOR_X,"RED")); p.setProperty("color.O",colorName(COLOR_O,"BLUE")); p.setProperty("color.grid",colorName(COLOR_GRID,"WHITE"));
+    p.setProperty("startPlayer",startPlayer); p.setProperty("username",username); p.setProperty("turnTimer",String.valueOf(turnTimerSeconds)); p.setProperty("gameMode",gameMode); p.setProperty("difficulty",difficulty);
+    p.setProperty("achievements",String.join(",",achievements));
+    try (OutputStream out = Files.newOutputStream(Paths.get(SCORES_FILE))) { p.store(out,"TicTacToe scores & preferences"); } catch (IOException e) { System.err.println("Could not save scores: " + e.getMessage()); }
+    saveFriends();
+}
+
+static int getInt(Properties p, String key, int fallback) { try { return Integer.parseInt(p.getProperty(key,String.valueOf(fallback))); } catch (Exception e) { return fallback; } }
+static String colorName(String ansi, String fallback) { return COLOR_MAP.entrySet().stream().filter(e -> e.getValue().equals(ansi)).map(Map.Entry::getKey).findFirst().orElse(fallback); }
+static String colorOf(String mark) { return mark.equals("X") ? COLOR_X : COLOR_O; }
+String other(String p) { return p.equals("X") ? "O" : "X"; }
+String gameModeName(String mode) { return switch (mode) { case MODE_MISERE -> "Misère"; case MODE_CONNECT -> "Connect-3"; default -> "Classic"; }; }
+static void setGameMode(String mode) { String m = mode.trim().toLowerCase(); if (Set.of(MODE_CLASSIC,MODE_MISERE,MODE_CONNECT).contains(m)) gameMode = m; }
+static int clamp(int v,int min,int max) { return Math.max(min,Math.min(max,v)); }
+
+boolean confirm(Scanner scanner, String prompt) { IO.print(prompt); return scanner.hasNextLine() && scanner.nextLine().trim().toLowerCase().startsWith("y"); }
+void pauseMessage(Scanner scanner, String message) { IO.println("\n" + message); if (scanner.hasNextLine()) scanner.nextLine(); }
+void disableColors() { COLOR_X = COLOR_O = COLOR_GRID = ""; }
+
+static class IO { static void print(String s) { System.out.print(s); } static void println(String s) { System.out.println(s); } }
+
+public static void parseARG(String[] args) {
+    for (int i = 0; i < args.length; i++) {
+        String arg = args[i];
+        try {
+            switch (arg) {
+                case "--botplay" -> botplay = true;
+                case "--ui" -> uiMode = true;
+                case "--no-color" -> ansiEnabled = false;
+                case "--easy" -> difficulty = "easy";
+                case "--normal" -> difficulty = "normal";
+                case "--hard" -> difficulty = "hard";
+                case "--mode" -> { if (i + 1 < args.length) setGameMode(args[++i]); }
+                case "--size" -> { if (i + 1 < args.length) size = clamp(Integer.parseInt(args[++i]),3,20); }
+                case "--startplayer" -> { if (i + 1 < args.length) { String sp=args[++i].toUpperCase(); if (sp.equals("X")||sp.equals("O")) startPlayer=sp; } }
+                case "--timer" -> { if (i + 1 < args.length) turnTimerSeconds=Math.max(0,Integer.parseInt(args[++i])); }
+                case "--name" -> { if (i + 1 < args.length) username=args[++i]; }
+                case "--resume" -> { uiMode = true; resumeRequested = true; }
+                case "--save" -> { /* save occurs after a game; kept as a compatibility flag */ }
+                case "--color-x" -> { if (i+1<args.length) { String c=COLOR_MAP.get(args[++i].toUpperCase()); if(c!=null) COLOR_X=c; } }
+                case "--color-o" -> { if (i+1<args.length) { String c=COLOR_MAP.get(args[++i].toUpperCase()); if(c!=null) COLOR_O=c; } }
+                case "--color-grid" -> { if (i+1<args.length) { String c=COLOR_MAP.get(args[++i].toUpperCase()); if(c!=null) COLOR_GRID=c; } }
+                case "--server" -> { networkMode=true; isServer=true; }
+                case "--client" -> { networkMode=true; isServer=false; if(i+1<args.length&&!args[i+1].startsWith("--")) serverAddress=args[++i]; }
+                case "--port" -> { if(i+1<args.length) networkPort=Integer.parseInt(args[++i]); }
+                case "--rooms" -> { if(i+1<args.length) serverRooms=clamp(Integer.parseInt(args[++i]),1,32); }
+                case "--room" -> { if(i+1<args.length) requestedRoom=args[++i]; }
+                case "--reset-scores" -> { winsX=winsO=draws=streakX=streakO=bestStreakX=bestStreakO=gamesPlayed=movesPlayed=timeouts=0; credits=100; powerups.clear(); achievements.clear(); saveScores(); }
+                case "--scores" -> { loadScores(); printScores(); printAchievements(); System.exit(0); }
+                case "--help" -> { Help(); return; }
+                default -> System.out.println("Unknown argument: " + arg);
+            }
+        } catch (NumberFormatException e) { System.out.println("Invalid value for " + arg); }
+    }
+}
+
+public static void clearConsole() {
+    try {
+        String os=System.getProperty("os.name");
+        if(os.toLowerCase().contains("windows")) new ProcessBuilder("cmd","/c","cls").inheritIO().start().waitFor();
+        else System.out.print("\033[H\033[2J");
+        System.out.flush();
+    } catch(Exception ignored) { }
+}
+
+public static boolean pingWithAnimation(String host) throws InterruptedException {
+    AtomicBoolean done = new AtomicBoolean(false);
+    AtomicBoolean success = new AtomicBoolean(false);
+    long startTime = System.currentTimeMillis();
+    Thread pinger = new Thread(() -> {
+        Process p = null;
+        try {
+            boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+            ProcessBuilder pb = windows
+                    ? new ProcessBuilder("ping", "-n", "2", "-w", "1500", host)
+                    : new ProcessBuilder("ping", "-c", "2", "-W", "2", host);
+            pb.redirectErrorStream(true);
+            p = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                while (reader.readLine() != null) { }
+            }
+            success.set(p.waitFor() == 0);
+        } catch (Exception e) {
+            success.set(false);
+        } finally {
+            if (p != null) p.destroyForcibly();
+            done.set(true);
+        }
+    }, "ttt-internet-check");
+    pinger.setDaemon(true);
+    pinger.start();
+    final int WIDTH = 16;
+    final int DELAY_MS = 80;
+    int pos = 0, direction = 1;
+    final int MIN_DISPLAY_MS = 1200;
+    final int MAX_WAIT_MS = 5000;
+    while ((!done.get() || System.currentTimeMillis() - startTime < MIN_DISPLAY_MS)
+            && System.currentTimeMillis() - startTime < MAX_WAIT_MS) {
+        StringBuilder bar = new StringBuilder("[");
+        for (int i = 0; i < WIDTH; i++) bar.append(i == pos ? '•' : '-');
+        bar.append("]  Connecting to AtomicWFC for Online Play...");
+        System.out.print("\r" + bar);
+        pos += direction;
+        if (pos == WIDTH - 1) direction = -1;
+        if (pos == 0) direction = 1;
+        Thread.sleep(DELAY_MS);
+    }
+    System.out.println("\r" + " ".repeat(75));
+    return success.get();
+}
+
+static void Help() {
+    System.out.println("""
+\u001B[1;36m# TicTacJava — Help\u001B[0m
+
+Basic usage:
+  java Main                              Local 2-player game
+  java Main --botplay --hard             Hard AI
+  java Main --ui                         Full terminal menu UI
+  java Main --resume --ui                Open the UI and resume a save
+
+Game modes:
+  --mode classic                         Normal Tic-Tac-Toe
+  --mode misere                          Completing a winning line loses
+  --mode connect                         Connect-3 on any board size
+  --size <N>                             Board size, 3-20
+
+Local game controls:
+  row col                                Make a move, e.g. 1 2
+  pause / p                              Save and return to menu
+  save / s                               Save without leaving the game
+  quit / q                               Quit the current game
+  --resume                               Resume from savegame.properties
+
+AI / turn options:
+  --botplay                              Play against O
+  --easy | --normal | --hard             AI difficulty
+  --startplayer X|O                      Choose first player
+  --timer <seconds>                      Turn time limit; 0 disables
+
+Network:
+  java Main --server --rooms 8 --port 2000
+  java Main --client 192.168.1.5 --room 3
+  --rooms <N>                             Host multiple simultaneous rooms
+  --port <PORT>                           TCP hosting/join port (default 2000)
+  --room <ID>                             Join a specific room
+  servers.ini                              Named servers: Name|Address|Port|Rooms
+
+Friends:
+  Friends are saved locally in friends.ini. Add a friend with their display name,
+  hostname/IP address, and presence port (default 2002). Online status is checked
+  directly between players; Internet friends may need port forwarding/firewall rules.
+
+Appearance:
+  --name <name>                           Player name
+  --no-color                              Disable ANSI colors
+  --color-x <COLOR>                       X color
+  --color-o <COLOR>                       O color
+  --color-grid <COLOR>                    Grid color
+
+Stats:
+  --scores                                Print scores/achievements and exit
+  --reset-scores                          Reset all stats
+
+Achievements include streaks, game/move milestones, board-size milestones,
+mode mastery, hard-AI wins, timed play, online play, timeouts, and save/resume.
+""");
+}
