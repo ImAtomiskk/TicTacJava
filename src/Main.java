@@ -12,6 +12,7 @@ static String difficulty = "normal";
 static String startPlayer = "X";
 static int turnTimerSeconds = 0;
 static String username = "Player";
+static final String BUILD_VERSION = "1.1-beta.1";
 static String COLOR_X = "\u001B[31m";
 static String COLOR_O = "\u001B[34m";
 static String COLOR_GRID = "\u001B[37m";
@@ -53,6 +54,7 @@ static String serverAddress = "localhost";
 static int networkPort = 2000;
 static final int DISCOVERY_PORT = 2001;
 static int serverRooms = 4;
+static String serverName = "Local Server";
 static String requestedRoom = "1";
 static int discoveryTimeoutMs = 1500;
 static boolean connected;
@@ -98,7 +100,7 @@ void mainMenu() throws Exception {
         refreshFriendStatuses();
         int onlineFriends = countOnlineFriends();
         IO.println(CYAN + BOLD + "╔══════════════════════════════════════╗" + RESET);
-        IO.println(CYAN + "║          Tic-Tac-Java v1.4           ║" + RESET);
+        IO.println(CYAN + "║       Tic-Tac-Java v" + BUILD_VERSION + "       ║" + RESET);
         IO.println(CYAN + "╠══════════════════════════════════════╣" + RESET);
         IO.println("║ Player: " + BOLD + String.format("%-28s", username) + RESET + " ║");
         IO.println("║ Mode:  " + String.format("%-10s", gameModeName(gameMode)) + " Board: " + String.format("%-12s", size + "x" + size) + "║");
@@ -106,6 +108,7 @@ void mainMenu() throws Exception {
         IO.println("║ AtomicWFC Status: " + String.format("%-17s", status) + "  ║");
         IO.println("║ Friends: " + String.format("%-27s", friends.size()) + " ║");
         IO.println("║ Friends Online: " + String.format("%-21s", onlineFriends) + "║");
+        IO.println("║ Credits: " + String.format("%-27s", credits) + " ║");
         IO.println(CYAN + "╚══════════════════════════════════════╝" + RESET);
         IO.println("");
         IO.println("  1. Local 2-player game");
@@ -479,7 +482,6 @@ void networkMenu(Scanner scanner) throws Exception {
         String c = scanner.nextLine().trim();
 
         if (c.equals("1")) {
-            isServer = true;
             networkMode = true;
             IO.print("Hosting port [" + networkPort + "]: ");
             String port = scanner.nextLine().trim();
@@ -490,7 +492,34 @@ void networkMenu(Scanner scanner) throws Exception {
             IO.print("Rooms to host (1-32): ");
             try { serverRooms = clamp(Integer.parseInt(scanner.nextLine().trim()), 1, 32); }
             catch (Exception ignored) { }
+
+            IO.print("Room for you to join [1]: ");
+            String hostRoom = scanner.nextLine().trim();
+            requestedRoom = hostRoom.isEmpty() ? "1" : hostRoom;
+            try {
+                int roomNumber = Integer.parseInt(requestedRoom);
+                if (roomNumber < 1 || roomNumber > serverRooms) {
+                    pauseMessage(scanner, "Invalid room number.");
+                    continue;
+                }
+            } catch (NumberFormatException e) {
+                pauseMessage(scanner, "Invalid room number.");
+                continue;
+            }
+
+            // The host now runs the server in the background and joins it as a normal player.
+            // This keeps the server available for all other rooms while the host plays too.
+            try {
+                startServerInBackground();
+            } catch (IOException e) {
+                pauseMessage(scanner, "Could not start the server on port " + networkPort + ": " + e.getMessage());
+                continue;
+            }
+            isServer = false;
+            serverAddress = "127.0.0.1";
             saveScores();
+            IO.println(GREEN + "Server started. Joining room " + requestedRoom + " as a player..." + RESET);
+            Thread.sleep(150);
             runNetworkGame();
             return;
         }
@@ -521,26 +550,33 @@ void networkMenu(Scanner scanner) throws Exception {
 }
 
 void joinServerMenu(Scanner scanner) throws Exception {
-    List<ServerEntry> entries = buildJoinServerList();
-
     while (true) {
+        List<ServerEntry> entries = buildJoinServerList();
         clearConsole();
         IO.println(CYAN + BOLD + "\n── Join Server ───────────────────────" + RESET);
-        for (int i = 0; i < entries.size(); i++) {
-            ServerEntry s = entries.get(i);
-            String rooms = s.rooms > 0 ? "  (" + s.rooms + " rooms)" : "";
-            String state = s.configured || s.discovered ? "" : "  [not configured]";
-            IO.println("[" + (i + 1) + "] " + s.name + rooms + state);
+        if (entries.isEmpty()) {
+            IO.println(YELLOW + " No compatible servers are currently online." + RESET);
+            IO.println("  [A] AtomicWFC Online appears here when it is online.");
+        } else {
+            for (int i = 0; i < entries.size(); i++) {
+                ServerEntry s = entries.get(i);
+                String rooms = s.rooms > 0 ? "  (" + s.rooms + " rooms)" : "";
+                IO.println("[" + (i + 1) + "] " + s.name + rooms);
+            }
         }
         int manualIndex = entries.size() + 1;
         IO.println("[" + manualIndex + "] Enter Manual Address");
+        IO.println("[R] Refresh");
+        IO.println("[0] Back");
         IO.print("\n Select: ");
 
         String input = scanner.nextLine().trim();
+        if (input.equalsIgnoreCase("0")) return;
+        if (input.equalsIgnoreCase("r")) continue;
+
         int pick;
         try { pick = Integer.parseInt(input); }
         catch (NumberFormatException e) { pauseMessage(scanner, "Invalid selection."); continue; }
-        if (pick == 0) return;
 
         if (pick == manualIndex) {
             IO.print("Server address [" + serverAddress + "]: ");
@@ -562,10 +598,6 @@ void joinServerMenu(Scanner scanner) throws Exception {
         }
 
         ServerEntry selected = entries.get(pick - 1);
-        if (!selected.configured && !selected.discovered) {
-            pauseMessage(scanner, selected.name + " has not been configured yet. Add it to " + SERVERS_FILE + ".");
-            continue;
-        }
         serverAddress = selected.address;
         networkPort = selected.port;
         chooseRoomAndConnect(scanner);
@@ -586,35 +618,50 @@ List<ServerEntry> buildJoinServerList() {
     List<ServerEntry> result = new ArrayList<>();
     Set<String> seen = new HashSet<>();
 
-    // Named remote servers come from servers.ini.
+    // Only show configured servers that are actually online AND report this exact build.
     for (ServerEntry configured : configuredServers) {
-        result.add(configured);
-        seen.add(configured.address + ":" + configured.port);
+        ServerEntry online = probeServer(configured);
+        if (online != null && seen.add(online.address + ":" + online.port)) result.add(online);
     }
 
-    // LAN servers are discovered automatically and get friendly Local Server names.
+    // LAN discovery already filters out incompatible builds.
     List<DiscoveredServer> discovered = discoverServers();
     int localNumber = 1;
     for (DiscoveredServer d : discovered) {
         String key = d.address + ":" + d.port;
         if (!seen.add(key)) continue;
-        result.add(new ServerEntry("Local Server " + localNumber++, d.address, d.port, d.rooms, false, true));
+        String displayName = d.name == null || d.name.isBlank() ? "Local Server " + localNumber : d.name;
+        result.add(new ServerEntry(displayName, d.address, d.port, d.rooms, false, true));
+        localNumber++;
     }
 
-    // Keep the requested directory-style slots visible even before they are configured.
-    String[] directoryNames = {"AtomicWFC Online", "Local Server 1", "Local Server 2", "Online Server 1", "Online Server 2"};
-    for (String name : directoryNames) {
-        boolean exists = result.stream().anyMatch(s -> s.name.equalsIgnoreCase(name));
-        if (!exists) result.add(new ServerEntry(name, "", 0, 0, false, false));
-    }
-
-    // Put the main AtomicWFC entry first, followed by the rest of the directory.
+    // AtomicWFC Online is shown only when its configured endpoint is online and compatible.
+    // If it is not configured/online, it is intentionally absent from the dynamic list.
     result.sort((a, b) -> {
         if (a.name.equalsIgnoreCase("AtomicWFC Online")) return -1;
         if (b.name.equalsIgnoreCase("AtomicWFC Online")) return 1;
-        return 0;
+        return a.name.compareToIgnoreCase(b.name);
     });
     return result;
+}
+
+ServerEntry probeServer(ServerEntry configured) {
+    try (Socket socket = new Socket()) {
+        socket.connect(new InetSocketAddress(configured.address, configured.port), 700);
+        socket.setSoTimeout(700);
+        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        out.println("STATUS=" + BUILD_VERSION);
+        String response = in.readLine();
+        if (response == null || !response.startsWith("STATUS_OK|")) return null;
+        String[] p = response.split("\\|", -1);
+        if (p.length < 4 || !BUILD_VERSION.equals(p[1])) return null;
+        String name = configured.name;
+        int rooms = Integer.parseInt(p[3]);
+        return new ServerEntry(name, configured.address, configured.port, rooms, true, false);
+    } catch (Exception ignored) {
+        return null;
+    }
 }
 
 static class ServerEntry {
@@ -828,6 +875,7 @@ void runNetworkGame() throws Exception {
          PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
          BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
          Scanner scanner = new Scanner(System.in)) {
+        out.println("VERSION=" + BUILD_VERSION);
         out.println("HELLO=" + username);
         out.println("ROOM=" + requestedRoom);
         String first = netIn.readLine();
@@ -867,8 +915,9 @@ static class DiscoveredServer {
     final String address;
     final int port;
     final int rooms;
-    DiscoveredServer(String name, String address, int port, int rooms) {
-        this.name = name; this.address = address; this.port = port; this.rooms = rooms;
+    final String version;
+    DiscoveredServer(String name, String address, int port, int rooms, String version) {
+        this.name = name; this.address = address; this.port = port; this.rooms = rooms; this.version = version;
     }
 }
 
@@ -895,12 +944,12 @@ List<DiscoveredServer> discoverServers() {
                 socket.receive(packet);
                 String response = new String(packet.getData(), 0, packet.getLength(), java.nio.charset.StandardCharsets.UTF_8);
                 String[] p = response.split("\\|");
-                if (p.length >= 4 && p[0].equals("TTT_SERVER")) {
+                if (p.length >= 5 && p[0].equals("TTT_SERVER") && BUILD_VERSION.equals(p[4])) {
                     int port = Integer.parseInt(p[2]);
                     int rooms = Integer.parseInt(p[3]);
                     String address = packet.getAddress().getHostAddress();
                     String name = p.length >= 2 && !p[1].isBlank() ? p[1] : "Local Server";
-                    found.put(address + ":" + port, new DiscoveredServer(name, address, port, rooms));
+                    found.put(address + ":" + port, new DiscoveredServer(name, address, port, rooms, BUILD_VERSION));
                 }
             } catch (SocketTimeoutException ignored) {}
             catch (Exception ignored) {}
@@ -921,7 +970,7 @@ void startDiscoveryResponder() {
                 socket.receive(packet);
                 String request = new String(packet.getData(), 0, packet.getLength(), java.nio.charset.StandardCharsets.UTF_8).trim();
                 if (!request.equals("TTT_DISCOVER")) continue;
-                String response = "TTT_SERVER|" + InetAddress.getLocalHost().getHostName() + "|" + networkPort + "|" + serverRooms;
+                String response = "TTT_SERVER|" + InetAddress.getLocalHost().getHostName() + "|" + networkPort + "|" + serverRooms + "|" + BUILD_VERSION;
                 byte[] data = response.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 socket.send(new DatagramPacket(data, data.length, packet.getAddress(), packet.getPort()));
             }
@@ -934,7 +983,7 @@ void startDiscoveryResponder() {
 void runServer() throws Exception {
     startDiscoveryResponder();
     IO.println(CYAN + BOLD + "Hosting " + serverRooms + " rooms on port " + networkPort + RESET);
-    IO.println("Two clients can join each room; the server computer does not need to play.");
+    IO.println("The server can host players in every room; it does not need to be a player itself.");
     IO.println("Clients join with: java Main --client <address> --room <room>");
     ExecutorService pool = Executors.newCachedThreadPool();
     try (ServerSocket server = new ServerSocket(networkPort)) {
@@ -948,9 +997,64 @@ void runServer() throws Exception {
     } finally { pool.shutdownNow(); }
 }
 
+/** Starts the same room server used by --server, but leaves it running in the background
+ *  so the computer hosting it can also connect as a player. */
+void startServerInBackground() throws IOException {
+    startDiscoveryResponder();
+    final ServerSocket server = new ServerSocket(networkPort);
+    Thread listener = new Thread(() -> {
+        ExecutorService pool = Executors.newCachedThreadPool();
+        try {
+            IO.println(CYAN + BOLD + "Hosting " + serverRooms + " rooms on port " + networkPort + RESET);
+            IO.println("Host player is enabled — you can play in any room while the server stays online.");
+            while (!server.isClosed()) {
+                Socket socket = server.accept();
+                pool.submit(() -> {
+                    try { handleRoomConnection(socket); }
+                    catch (Exception e) { System.err.println("Room connection ended: " + e.getMessage()); }
+                });
+            }
+        } catch (IOException ignored) {
+            // Server socket closed or accept failed.
+        } finally {
+            pool.shutdownNow();
+            try { server.close(); } catch (IOException ignored) { }
+        }
+    }, "ttt-host-server");
+    listener.setDaemon(true);
+    listener.start();
+}
+
 void handleRoomConnection(Socket socket) throws Exception {
     BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
     PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+    String firstLine = in.readLine();
+    if (firstLine == null) {
+        out.println("ERROR=Invalid handshake.");
+        socket.close();
+        return;
+    }
+    if (firstLine.startsWith("STATUS=")) {
+        String requestedVersion = firstLine.substring(7).trim();
+        if (!BUILD_VERSION.equals(requestedVersion)) {
+            out.println("STATUS_INCOMPATIBLE|" + BUILD_VERSION);
+        } else {
+            out.println("STATUS_OK|" + BUILD_VERSION + "|" + serverName + "|" + serverRooms);
+        }
+        socket.close();
+        return;
+    }
+    if (!firstLine.startsWith("VERSION=")) {
+        out.println("ERROR=Version handshake required.");
+        socket.close();
+        return;
+    }
+    String clientVersion = firstLine.substring(8).trim();
+    if (!BUILD_VERSION.equals(clientVersion)) {
+        out.println("ERROR=Version mismatch. Server: " + BUILD_VERSION + " | Client: " + clientVersion);
+        socket.close();
+        return;
+    }
     String hello = in.readLine();
     String requested = in.readLine();
     if (hello == null || !hello.startsWith("HELLO=") || requested == null || !requested.startsWith("ROOM=")) {
@@ -1463,6 +1567,7 @@ AI / turn options:
   --timer <seconds>                      Turn time limit; 0 disables
 
 Network:
+  Build version: " + BUILD_VERSION + "
   java Main --server --rooms 8 --port 2000
   java Main --client 192.168.1.5 --room 3
   --rooms <N>                             Host multiple simultaneous rooms
