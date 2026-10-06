@@ -12,7 +12,7 @@ static String difficulty = "normal";
 static String startPlayer = "X";
 static int turnTimerSeconds = 0;
 static String username = "Player";
-static final String BUILD_VERSION = "1.1-beta.3";
+static final String BUILD_VERSION = "1.1";
 static String COLOR_X = "\u001B[31m";
 static String COLOR_O = "\u001B[34m";
 static String COLOR_GRID = "\u001B[37m";
@@ -50,14 +50,39 @@ static boolean resumeRequested = false;
 static boolean ansiEnabled = true;
 static boolean networkMode = false;
 static boolean isServer = false;
-static String serverAddress = "localhost";
+static String serverAddress = "eclipse.2bd.net";
+static String ATOMICWFC_HOST = "eclipse.2bd.net";
 static int networkPort = 2000;
 static final int DISCOVERY_PORT = 2001;
-static int serverRooms = 4;
+static int serverRooms = 16;
 static String serverName = "Local Server";
 static String requestedRoom = "1";
 static int discoveryTimeoutMs = 1500;
 static boolean connected;
+static AtomicServerInfo atomicServerInfo;
+static final int USERNAME_MAX = 20;
+
+static boolean validOnlineUsername(String name) {
+    if (name == null) return false;
+    String n = name.trim();
+    return !n.isEmpty() && n.length() <= USERNAME_MAX && n.matches("[A-Za-z0-9 ]+");
+}
+
+static String sanitizeDisplayName(String name) {
+    return name == null ? "" : name.replaceAll("[^A-Za-z0-9 ]", "").trim();
+}
+
+static class AtomicServerInfo {
+    String name = "AtomicWFC Online";
+    String motd = "";
+    int season = 1;
+    long seasonEnd = 0;
+    int myPoints = 0;
+    String myRank = "Bronze";
+    String myBadge = "Rookie";
+    List<String> leaderboard = new ArrayList<>();
+}
+
         static int winsX = 0, winsO = 0, draws = 0;
         static int streakX = 0, streakO = 0, bestStreakX = 0, bestStreakO = 0;
         static int gamesPlayed = 0, movesPlayed = 0, timeouts = 0;
@@ -75,6 +100,7 @@ void main(String[] args) throws Exception {
     loadConfiguredServers();
     parseARG(args);
     if (!ansiEnabled) disableColors();
+    showSplash();
     clearConsole();
     startFriendPresenceResponder();
     connected = pingWithAnimation("github.com");
@@ -100,7 +126,7 @@ void mainMenu() throws Exception {
         refreshFriendStatuses();
         int onlineFriends = countOnlineFriends();
         IO.println(CYAN + BOLD + "╔══════════════════════════════════════╗" + RESET);
-        IO.println(CYAN + "║       Tic-Tac-Java v" + BUILD_VERSION + "       ║" + RESET);
+        IO.println(CYAN + "║       Tic-Tac-Java v" + BUILD_VERSION + "              ║" + RESET);
         IO.println(CYAN + "╠══════════════════════════════════════╣" + RESET);
         IO.println("║ Player: " + BOLD + String.format("%-28s", username) + RESET + " ║");
         IO.println("║ Mode:  " + String.format("%-10s", gameModeName(gameMode)) + " Board: " + String.format("%-12s", size + "x" + size) + "║");
@@ -354,9 +380,10 @@ void settingsMenu(Scanner scanner) {
                     turnTimerSeconds = Math.max(0, Integer.parseInt(scanner.nextLine().trim()));
                 }
                 case "6" -> {
-                    IO.print("Player name: ");
+                    IO.print("Player name (letters, numbers, spaces only; max 20): ");
                     String n = scanner.nextLine().trim();
-                    if (!n.isEmpty()) username = n;
+                    if (validOnlineUsername(n)) username = n;
+                    else pauseMessage(scanner, "Invalid name. Online names may contain only letters, numbers, and spaces.");
                 }
                 case "7" -> { ansiEnabled = !ansiEnabled; if (!ansiEnabled) disableColors(); }
                 case "0" -> { saveScores(); return; }
@@ -475,7 +502,7 @@ void networkMenu(Scanner scanner) throws Exception {
         clearConsole();
         IO.println(CYAN + BOLD + "\n── Network ────────────────────────────" + RESET);
         IO.println("  1. Host server (" + serverRooms + " rooms, port " + networkPort + ")");
-        IO.println("  2. Join server");
+        IO.println("  2. Join server <- (AtomicWFC Live!)");
         IO.println("  3. Scan network for game servers");
         IO.println("  0. Back");
         IO.print("\n Select: ");
@@ -588,7 +615,7 @@ void joinServerMenu(Scanner scanner) throws Exception {
                 try { networkPort = clamp(Integer.parseInt(port), 1, 65535); }
                 catch (Exception e) { pauseMessage(scanner, "Invalid port."); continue; }
             }
-            chooseRoomAndConnect(scanner);
+            showAtomicServerPage(scanner);
             return;
         }
 
@@ -600,15 +627,111 @@ void joinServerMenu(Scanner scanner) throws Exception {
         ServerEntry selected = entries.get(pick - 1);
         serverAddress = selected.address;
         networkPort = selected.port;
-        chooseRoomAndConnect(scanner);
+        showAtomicServerPage(scanner);
         return;
     }
 }
 
+void showAtomicServerPage(Scanner scanner) throws Exception {
+    atomicServerInfo = fetchAtomicServerInfo(username);
+    clearConsole();
+    IO.println(CYAN + BOLD + "\n╔══════════════════════════════════════════════╗" + RESET);
+    IO.println(CYAN + "║              AtomicWFC Online                ║" + RESET);
+    IO.println(CYAN + "╚══════════════════════════════════════════════╝" + RESET);
+    if (atomicServerInfo == null) {
+        IO.println(RED + "\n Unable to retrieve AtomicWFC information." + RESET);
+        pauseMessage(scanner, "Press Enter to continue...");
+        return;
+    }
+    IO.println("\n " + BOLD + "MESSAGE OF THE DAY" + RESET);
+    IO.println(" ──────────────────────────────────────────────");
+    if (atomicServerInfo.motd.isBlank()) IO.println(" No message from the server.");
+    else for (String line : atomicServerInfo.motd.split("\\n", -1)) IO.println(" " + line);
+    IO.println("\n " + BOLD + "SEASON " + atomicServerInfo.season + RESET);
+    long remaining = Math.max(0, atomicServerInfo.seasonEnd - System.currentTimeMillis()/1000L);
+    IO.println(" Ends in: " + formatDuration(remaining));
+    IO.println(" Your league: " + atomicServerInfo.myRank + "  |  Points: " + atomicServerInfo.myPoints + "  |  Badge: " + atomicServerInfo.myBadge);
+    if (!atomicServerInfo.leaderboard.isEmpty()) {
+        IO.println("\n " + BOLD + "TOP PLAYERS" + RESET);
+        for (String row : atomicServerInfo.leaderboard) IO.println(" " + row);
+    }
+    IO.println("\n  1. Join an existing room");
+    IO.println("  2. Create a new room");
+    IO.println("  0. Back");
+    IO.print("\n Select: ");
+    String choice = scanner.nextLine().trim();
+    if (choice.equals("0")) return;
+    if (choice.equals("1") || choice.equals("2")) {
+        if (choice.equals("1")) {
+            IO.print("Room number [1]: ");
+            String r = scanner.nextLine().trim();
+            requestedRoom = r.isBlank() ? "1" : r;
+        }
+        if (!validOnlineUsername(username)) {
+            pauseMessage(scanner, "Online play requires a name containing only letters, numbers, and spaces.");
+            return;
+        }
+        requestedRoom = choice.equals("2") ? "NEW" : requestedRoom;
+        isServer = false; networkMode = true; runNetworkGame(scanner);
+    }
+}
+
+String formatDuration(long seconds) {
+    long days=seconds/86400; seconds%=86400; long hours=seconds/3600; seconds%=3600; long mins=seconds/60;
+    if (days>0) return days+"d "+hours+"h";
+    if (hours>0) return hours+"h "+mins+"m";
+    return mins+"m";
+}
+
+AtomicServerInfo fetchAtomicServerInfo(String player) {
+    try (Socket socket = new Socket()) {
+        socket.connect(new InetSocketAddress(serverAddress, networkPort), 2000);
+        socket.setSoTimeout(2000);
+        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        out.println("INFO=" + (validOnlineUsername(player) ? player : "Player"));
+        AtomicServerInfo info = new AtomicServerInfo();
+        StringBuilder motd = new StringBuilder();
+        String line;
+        while ((line=in.readLine()) != null) {
+            if (line.equals("INFO_END")) break;
+            if (line.startsWith("SERVER=")) info.name=line.substring(7);
+            else if (line.startsWith("MOTD=")) { if (motd.length()>0) motd.append('\n'); motd.append(line.substring(5)); }
+            else if (line.startsWith("SEASON=")) info.season=Integer.parseInt(line.substring(7));
+            else if (line.startsWith("SEASON_END=")) info.seasonEnd=Long.parseLong(line.substring(11));
+            else if (line.startsWith("POINTS=")) info.myPoints=Integer.parseInt(line.substring(7));
+            else if (line.startsWith("RANK=")) info.myRank=line.substring(5);
+            else if (line.startsWith("BADGE=")) info.myBadge=line.substring(6);
+            else if (line.startsWith("TOP=")) info.leaderboard.add(line.substring(4).replace('|',' '));
+        }
+        info.motd=motd.toString();
+        return info;
+    } catch (Exception e) { return null; }
+}
+
 void chooseRoomAndConnect(Scanner scanner) throws Exception {
-    IO.print("Room [1]: ");
-    String r = scanner.nextLine().trim();
-    requestedRoom = r.isEmpty() ? "1" : r;
+    while (true) {
+        clearConsole();
+        IO.println(CYAN + BOLD + "\n── AtomicWFC Online ─────────────────" + RESET);
+        IO.println("  Server: " + serverAddress + ":" + networkPort);
+        IO.println("\n  1. Join an existing room");
+        IO.println("  2. Create a new room");
+        IO.println("  0. Back");
+        IO.print("\n Select: ");
+        String choice = scanner.nextLine().trim();
+        if (choice.equals("0")) return;
+        if (choice.equals("1")) {
+            IO.print("Room number [1]: ");
+            String r = scanner.nextLine().trim();
+            requestedRoom = r.isEmpty() ? "1" : r;
+            break;
+        }
+        if (choice.equals("2")) {
+            requestedRoom = "NEW";
+            break;
+        }
+        pauseMessage(scanner, "Invalid selection.");
+    }
     isServer = false;
     networkMode = true;
     runNetworkGame(scanner);
@@ -617,6 +740,13 @@ void chooseRoomAndConnect(Scanner scanner) throws Exception {
 List<ServerEntry> buildJoinServerList() {
     List<ServerEntry> result = new ArrayList<>();
     Set<String> seen = new HashSet<>();
+
+    // Official AtomicWFC Online server is always checked directly; servers.ini is optional.
+    ServerEntry official = new ServerEntry("AtomicWFC Online", ATOMICWFC_HOST, 2000, 16, true, false);
+    ServerEntry officialOnline = probeServer(official);
+    if (officialOnline != null && seen.add(officialOnline.address + ":" + officialOnline.port)) {
+        result.add(officialOnline);
+    }
 
     // Only show configured servers that are actually online AND report this exact build.
     for (ServerEntry configured : configuredServers) {
@@ -873,47 +1003,55 @@ void runNetworkGame() throws Exception {
 }
 
 void runNetworkGame(Scanner scanner) throws Exception {
+    if (!validOnlineUsername(username)) {
+        pauseMessage(scanner, "Online play blocked: your username may contain only letters, numbers, and spaces (max 20 characters).");
+        return;
+    }
     if (isServer) {
         runServer();
         return;
     }
-    try (Socket socket = new Socket(serverAddress, networkPort);
-         PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-         BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-        out.println("VERSION=" + BUILD_VERSION);
-        out.println("HELLO=" + username);
-        out.println("ROOM=" + requestedRoom);
-        String first = netIn.readLine();
-        if (first == null) throw new IOException("Server closed the connection.");
-        if (first.startsWith("ERROR=")) { IO.println(RED + first.substring(6) + RESET); return; }
-        if (!first.startsWith("ROOM=")) throw new IOException("Invalid server response.");
-        String room = first.substring(5);
-        String roleLine = netIn.readLine();
-        if (roleLine != null && roleLine.equals("WAITING")) {
-            String waitingMessage = netIn.readLine();
-            if (waitingMessage != null) IO.println(YELLOW + waitingMessage + RESET);
-            roleLine = netIn.readLine();
+    try (Socket socket = new Socket()) {
+        try {
+            socket.connect(new InetSocketAddress(serverAddress, networkPort), 5000);
+        } catch (IOException e) {
+            pauseMessage(scanner, "Could not connect to " + serverAddress + ":" + networkPort + "\n" + e.getMessage());
+            return;
         }
-        if (roleLine == null || !roleLine.startsWith("ROLE=")) throw new IOException("Invalid room setup response.");
-        String role = roleLine.substring(5);
-        int syncedSize = Integer.parseInt(netIn.readLine().substring(5));
-        String syncedStart = netIn.readLine().substring(6);
-        int syncedTimer = Integer.parseInt(netIn.readLine().substring(6));
-        String opponentName = netIn.readLine().substring(5);
-        size = syncedSize; startPlayer = syncedStart; turnTimerSeconds = syncedTimer;
-        playNetworkSession(socket, out, netIn, scanner, role, room, opponentName);
+        try (PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+             BufferedReader netIn = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+            out.println("VERSION=" + BUILD_VERSION);
+            out.println("HELLO=" + username);
+            out.println("ROOM=" + requestedRoom);
+            String first = netIn.readLine();
+            if (first == null) throw new IOException("Server closed the connection.");
+            if (first.startsWith("ERROR=")) { IO.println(RED + first.substring(6) + RESET); return; }
+            if (!first.startsWith("ROOM=")) throw new IOException("Invalid server response.");
+            String room = first.substring(5);
+            String roleLine = netIn.readLine();
+            if (roleLine != null && roleLine.equals("WAITING")) {
+                String waitingMessage = netIn.readLine();
+                if (waitingMessage != null) IO.println(YELLOW + waitingMessage + RESET);
+                roleLine = netIn.readLine();
+            }
+            if (roleLine == null || !roleLine.startsWith("ROLE=")) throw new IOException("Invalid room setup response.");
+            String role = roleLine.substring(5);
+            int syncedSize = Integer.parseInt(netIn.readLine().substring(5));
+            String syncedStart = netIn.readLine().substring(6);
+            int syncedTimer = Integer.parseInt(netIn.readLine().substring(6));
+            String opponentName = netIn.readLine().substring(5);
+            size = syncedSize; startPlayer = syncedStart; turnTimerSeconds = syncedTimer;
+            playNetworkSession(socket, out, netIn, scanner, role, room, opponentName);
+        }
     }
 }
 
 static class Room {
     final Socket socket;
-    final BufferedReader in;
     final PrintWriter out;
     final String name;
     final CountDownLatch paired = new CountDownLatch(1);
-    Room(Socket socket, BufferedReader in, PrintWriter out, String name) {
-        this.socket = socket; this.in = in; this.out = out; this.name = name;
-    }
+    Room(Socket socket, PrintWriter out, String name) { this.socket = socket; this.out = out; this.name = name; }
 }
 
 static final Map<String, Room> ROOMS = new HashMap<>();
@@ -1083,7 +1221,7 @@ void handleRoomConnection(Socket socket) throws Exception {
     synchronized (ROOMS) {
         first = ROOMS.remove(roomId);
         if (first == null) {
-            waiting = new Room(socket, in, out, name);
+            waiting = new Room(socket, out, name);
             ROOMS.put(roomId, waiting);
         }
     }
@@ -1111,16 +1249,14 @@ void handleRoomConnection(Socket socket) throws Exception {
 
     // Relay commands between the two clients. The clients own game state and UI.
     ExecutorService relay = Executors.newFixedThreadPool(2);
-    // Reuse the BufferedReader created during the handshake. Creating a second
-    // BufferedReader on the same socket can buffer bytes independently and lose
-    // or delay gameplay messages, especially across different JVM/platforms.
-    relay.submit(() -> relayPlayer(first.socket, first.in, out, socket));
-    relay.submit(() -> relayPlayer(socket, in, first.out, first.socket));
+    relay.submit(() -> relayPlayer(first.socket, out, socket));
+    relay.submit(() -> relayPlayer(socket, first.out, first.socket));
     relay.shutdown();
 }
 
-void relayPlayer(Socket from, BufferedReader in, PrintWriter to, Socket other) {
+void relayPlayer(Socket from, PrintWriter to, Socket other) {
     try {
+        BufferedReader in = new BufferedReader(new InputStreamReader(from.getInputStream()));
         String line;
         while ((line = in.readLine()) != null) {
             to.println(line);
@@ -1135,47 +1271,63 @@ void relayPlayer(Socket from, BufferedReader in, PrintWriter to, Socket other) {
 void playNetworkSession(Socket socket, PrintWriter out, BufferedReader netIn, Scanner scanner,
                         String myMark, String room, String opponentName) throws Exception {
     final String theirMark = other(myMark);
+    String opponentBadge = "Rookie";
+    String line;
+    while ((line = netIn.readLine()) != null) {
+        if (line.startsWith("BADGE=")) { opponentBadge = line.substring(6); break; }
+        if (line.startsWith("LEAGUE=")) continue;
+        if (line.startsWith("MOTD=")) continue;
+        if (line.startsWith("READY")) break;
+    }
     String mySymbol = colorOf(myMark) + myMark + RESET;
     String theirSymbol = colorOf(theirMark) + theirMark + RESET;
     String matchHeader = " Room " + room + " | " + BOLD + username + RESET + " (" + mySymbol + ") vs "
-            + BOLD + opponentName + RESET + " (" + theirSymbol + ")";
+            + BOLD + opponentName + RESET + " (" + theirSymbol + ") [" + opponentBadge + "]";
     String[][] board = newBoard();
-    boolean myTurn = myMark.equals(startPlayer);
+    boolean myTurn = false;
     IO.println(matchHeader);
 
     while (true) {
         clearConsole(); IO.println(matchHeader); displayBoard(board);
         if (myTurn) {
-            IO.println("\n Your turn (" + mySymbol + ") — type 'quit' to leave.");
+            IO.println("\n Your turn (server-authoritative) — type 'quit' to leave.");
             InputResult input = readMoveWithTimer(scanner, turnTimerSeconds);
             if (input.command != null && input.command.equals("quit")) { out.println("QUIT"); return; }
-            if (input.move == null) { out.println("TIMEOUT"); myTurn = false; continue; }
-            if (!makeMove(board, input.move[0], input.move[1], myMark)) { IO.println("Invalid move."); continue; }
-            out.println(input.move[0] + "," + input.move[1]);
+            if (input.move == null) { IO.println(YELLOW + "Waiting for server timeout result..." + RESET); }
+            else {
+                out.println("MOVE=" + input.move[0] + "," + input.move[1]);
+            }
+            myTurn = false;
         } else {
-            IO.println("\n Waiting for " + opponentName + "...");
-            String line = netIn.readLine();
-            if (line == null || line.equals("QUIT")) { IO.println(YELLOW + "Opponent left the room." + RESET); return; }
-            if (line.equals("TIMEOUT")) { myTurn = true; continue; }
-            String[] p = line.split(",");
-            if (p.length != 2) continue;
-            int r = Integer.parseInt(p[0].trim()), c = Integer.parseInt(p[1].trim());
-            if (!makeMove(board, r, c, theirMark)) { IO.println(RED + "Invalid move received." + RESET); return; }
+            String msg = netIn.readLine();
+            if (msg == null) { IO.println(YELLOW + "Connection to AtomicWFC ended." + RESET); return; }
+            if (msg.equals("QUIT")) { IO.println(YELLOW + "Opponent left the room." + RESET); return; }
+            if (msg.startsWith("ERROR=")) { IO.println(RED + msg.substring(6) + RESET); continue; }
+            if (msg.startsWith("MOVE=")) {
+                String[] p = msg.substring(5).split("\\|");
+                if (p.length == 3) {
+                    String mark=p[0]; int r=Integer.parseInt(p[1]), c=Integer.parseInt(p[2]);
+                    if (!makeMove(board,r,c,mark)) { IO.println(RED+"Server sent an invalid move."+RESET); return; }
+                }
+                continue;
+            }
+            if (msg.startsWith("TURN=")) { myTurn = msg.substring(5).equals(myMark); continue; }
+            if (msg.startsWith("RESULT=")) {
+                String[] p=msg.split("\\|",-1);
+                String outcome=p.length>1?p[1]:"DRAW";
+                int delta=p.length>2?Integer.parseInt(p[2]):0;
+                int points=p.length>3?Integer.parseInt(p[3]):0;
+                String rank=p.length>4?p[4]:"Bronze";
+                String badge=p.length>5?p[5]:"Rookie";
+                clearConsole(); IO.println(matchHeader); displayBoard(board);
+                if (outcome.equals("WIN")) IO.println(GREEN+BOLD+"\n You win!  +"+delta+" league points"+RESET);
+                else if (outcome.equals("LOSS")) IO.println(YELLOW+"\n You lose.  "+delta+" league points"+RESET);
+                else IO.println(CYAN+"\n Draw.  "+delta+" league points"+RESET);
+                IO.println(" League: "+rank+"  |  Points: "+points+"  |  Badge: "+badge);
+                gamesPlayed++; achievements.add("network"); updateAchievements(null); saveScores();
+                pauseMessage(scanner,"Press Enter to return..."); return;
+            }
         }
-
-        String lastMover = myTurn ? myMark : theirMark;
-        if (checkWin(board, lastMover, gameMode)) {
-            clearConsole(); IO.println(matchHeader); displayBoard(board);
-            String winner = lastMover;
-            if (gameMode.equals(MODE_MISERE)) winner = other(lastMover);
-            IO.println(winner.equals(myMark) ? GREEN + BOLD + "\n You win!" + RESET : YELLOW + "\n You lose!" + RESET);
-            recordWin(winner); gamesPlayed++; achievements.add("network"); updateAchievements(null); saveScores(); return;
-        }
-        if (isBoardFull(board)) {
-            clearConsole(); IO.println(matchHeader); displayBoard(board); IO.println(CYAN + "\n Draw!" + RESET);
-            recordDraw(); gamesPlayed++; achievements.add("network"); updateAchievements(null); saveScores(); return;
-        }
-        myTurn = !myTurn;
     }
 }
 
@@ -1490,6 +1642,20 @@ public static void parseARG(String[] args) {
             }
         } catch (NumberFormatException e) { System.out.println("Invalid value for " + arg); }
     }
+}
+
+static void showSplash() throws InterruptedException {
+    clearConsole();
+    String title = "TicTacJava";
+    StringBuilder built = new StringBuilder();
+    IO.println(CYAN + BOLD + "\n");
+    for (char ch : title.toCharArray()) {
+        built.append(ch);
+        IO.print("\r        " + built);
+        Thread.sleep(100);
+    }
+    IO.println(RESET + "\n\n        Online-ready Tic-Tac-Toe");
+    Thread.sleep(500);
 }
 
 public static void clearConsole() {
